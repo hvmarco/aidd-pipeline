@@ -1,0 +1,32 @@
+# Colab-only pip extras. Each Colab notebook installs from this at the top.
+# Usage in a notebook cell:
+#     !pip install -q -r https://raw.githubusercontent.com/<owner>/aidd-pipeline/main/requirements-colab.txt
+#
+# Why this file exists separately from environment.yml:
+#   Colab pre-installs much of the scientific stack and uses pip, not conda.
+#   GPU steps (Boltz-2, ColabFold, gnina) are easier to install with pip/apt in Colab
+#   than to recreate the full conda env there.
+
+# --- cheminformatics (Colab often has older versions; pin to compatible minimums) ---
+rdkit>=2024.3
+datamol
+prolif>=2.0
+posebusters
+meeko
+biopython
+py3Dmol
+
+# --- tabular ML ---
+scikit-learn>=1.4
+xgboost
+lightgbm
+
+# --- co-folding (Boltz-2) ---
+# Boltz-2 pulls torch as a dependency; takes a few minutes to install on Colab.
+boltz
+
+# --- NOT pip-installable; see the notebooks that need them ---
+#   ColabFold        : installed via official setup script in notebooks/01_fold_target.ipynb
+#   gnina            : installed via `apt-get install -y gnina` in notebooks/03_dock_gnina.ipynb
+#                      (or via a prebuilt static binary on platforms where apt is unavailable)
+#   DiffDock         : git-clone + its own requirements; parked, see _planning/CONSULTANT_REVIEW.md

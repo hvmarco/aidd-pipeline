@@ -1,0 +1,54 @@
+name: aidd
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+
+  # --- core scientific ---
+  - numpy
+  - pandas>=2.0
+  - scipy
+  - matplotlib
+  - seaborn
+  - tqdm
+  - pyyaml
+  - pyarrow            # parquet caching for per-stage outputs
+
+  # --- cheminformatics core (conda-forge wheels available on Win/Mac/Linux) ---
+  - rdkit>=2024.3
+  - openbabel
+  - biopython
+
+  # --- CPU docking baseline (gnina lives in WSL/Colab; this is the always-works fallback) ---
+  - autodock-vina
+
+  # --- in-notebook 3D visualisation ---
+  - py3dmol
+
+  # --- tabular ML ---
+  - scikit-learn>=1.4
+  - xgboost
+  - lightgbm
+  - imbalanced-learn
+
+  # --- notebooks ---
+  - jupyterlab>=4
+  - ipykernel
+  - ipywidgets
+  - nbformat
+
+  # --- dev quality ---
+  - black
+  - ruff
+  - pytest
+
+  # --- pip extras (faster moving / not always on conda-forge for Windows) ---
+  - pip:
+      - datamol             # RDKit wrapper with sensible defaults
+      - meeko               # AutoDock-family ligand prep
+      - prolif>=2.0         # interaction fingerprints
+      - posebusters         # automated pose QC
+      - nbstripout          # strip notebook outputs pre-commit
