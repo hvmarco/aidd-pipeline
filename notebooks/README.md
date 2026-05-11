@@ -32,11 +32,14 @@ The builders share three small helpers from [`_nb_helpers.py`](_nb_helpers.py): 
 ## Pipeline overview
 
 ```
-sequence / PDB ──► 01_fold_target ──┐
-                                    ├──► 03_dock_gnina ──► 04_score_classical ──┐
+sequence / PDB ──► 01_fold_target ──┐                                            ┌──► 07_mutation_analysis (WT vs mutant diff)
+(WT or mutant)                      │                                            │
+                                    ├──► 03_dock_gnina ──► 04_score_classical ──┤
 SMILES library ──► 02_prepare ──────┤                                            ├──► 06_consensus ──► shortlist.sdf
                                     └──► 05_dock_boltz ───────────────────────────┘
 ```
+
+For **mutation studies** (e.g. drug-resistance screens), run notebooks 01–06 once for the wild-type and once per mutant variant. Notebook 07 then consumes the two `data/derived/<target>[_<variant>]/` trees and produces the side-by-side comparison: Cα-RMSD, IFP diff, side-by-side pocket viewer, and a diff of the two final shortlists.
 
 ## The notebooks
 
@@ -49,7 +52,8 @@ SMILES library ──► 02_prepare ──────┤                       
 | 04  | `_build_04_score_classical.py`           | `04_score_classical.ipynb`          | IFP + ML rescorer (sklearn / XGBoost)         | local CPU / Colab    | planned |
 | 05  | `_build_05_dock_boltz.py`                | `05_dock_boltz.ipynb`               | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | planned |
 | 06  | `_build_06_consensus_and_shortlist.py`   | `06_consensus_and_shortlist.ipynb`  | consensus rank → `shortlist.sdf`              | local CPU / Colab    | planned |
-| 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner for routine screens         | Colab Pro+ recommended | planned (after 06) |
+| 07  | `_build_07_mutation_analysis.py`         | `07_mutation_analysis.ipynb`        | diff WT vs mutant runs (structure + IFP + shortlist) | local CPU / Colab    | planned (after 06) |
+| 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner (accepts `mutations=` list) | Colab Pro+ recommended | planned (after 07) |
 
 Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold) and `05` (Boltz-2); the others run faster locally but work in Colab too.
 
@@ -60,13 +64,14 @@ The contract between notebooks is simple: each stage reads from and writes to `d
 | Stage              | Reads                                    | Writes                                                                |
 |--------------------|------------------------------------------|------------------------------------------------------------------------|
 | 00 quickstart      | `data/structures/*.pdb`, `data/ligands/*.pdb` | nothing persistent (demo)                                              |
-| 01 fold_target     | target sequence (FASTA)                  | `data/derived/<target>/fold/{pred.pdb, msa/, ranking.csv}`             |
+| 01 fold_target     | target sequence (FASTA) — WT or mutant  | `data/derived/<target>[_<variant>]/fold/{pred.pdb, msa/, ranking.csv}` |
 | 02 prepare_ligands | `data/compounds/<target>/*.smi`          | `data/derived/<target>/ligands/ligands_prepared.sdf`                   |
-| 03 dock_gnina      | prepared SDF + receptor PDB              | `data/derived/<target>/docking/{poses.sdf, gnina_scores.csv}`          |
-| 04 score_classical | poses SDF + receptor + activity labels   | `data/derived/<target>/scoring/{rescorer.pkl, scored_poses.parquet}`   |
-| 05 dock_boltz      | prepared SDF + target sequence/structure | `data/derived/<target>/boltz/{poses.sdf, affinity.csv}`                |
-| 06 consensus       | scored_poses.parquet + affinity.csv      | `data/derived/<target>/shortlist/{shortlist.sdf, shortlist.csv}`       |
-| 99 runner          | a target + a SMILES library              | the full chain above                                                  |
+| 03 dock_gnina      | prepared SDF + receptor PDB              | `data/derived/<target>[_<variant>]/docking/{poses.sdf, gnina_scores.csv}` |
+| 04 score_classical | poses SDF + receptor + activity labels   | `data/derived/<target>[_<variant>]/scoring/{rescorer.pkl, scored_poses.parquet}` |
+| 05 dock_boltz      | prepared SDF + target sequence/structure | `data/derived/<target>[_<variant>]/boltz/{poses.sdf, affinity.csv}`    |
+| 06 consensus       | scored_poses.parquet + affinity.csv      | `data/derived/<target>[_<variant>]/shortlist/{shortlist.sdf, shortlist.csv}` |
+| 07 mutation_analysis | two completed `data/derived/<target>[_<variant>]/` trees | `data/derived/<target>/mutations/{wt_vs_<variant>.html, ...}` |
+| 99 runner          | a target + a SMILES library + optional `mutations=` list | the full chain above (and notebook 07 per variant) |
 
 ## Notebook conventions
 

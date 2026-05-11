@@ -17,13 +17,14 @@
 | GPU access | locked | **Colab-only** (free or Pro). All GPU steps are Colab notebooks; local runs are CPU-only via gnina. |
 | v1 throughput | locked | **1k–10k compounds per screen.** Notebook-driven with a per-stage cached-file batch driver; resumable. |
 | Triage philosophy | locked | **Defensible consensus** — Boltz-2 affinity rank AND gnina+IFP-rescorer rank must both place a compound in top X% (X tunable, default 5%). |
-| Notebook structure | locked | **7 teaching notebooks (00–06) + 1 production runner (99)**, each numbered notebook is one pipeline stage; each is independently runnable from cached intermediate outputs in `data/derived/<target>/<stage>/`. The runner (99) is built last, after 06. |
+| Notebook structure | locked | **8 teaching notebooks (00–07) + 1 production runner (99)**, each numbered notebook is one pipeline stage; each is independently runnable from cached intermediate outputs in `data/derived/<target>/<stage>/`. The runner (99) is built last, after 07. |
+| Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 07 (`07_mutation_analysis`)** compares WT vs mutant outputs (structure, IFP, docking shortlist) for drug-resistance / structural-impact studies. See §8. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
 ## 1. Goal (in one sentence)
 
-Stand up a reproducible, cross-platform Jupyter pipeline that, given a target protein (sequence or PDB) and a list of candidate ligands (SMILES), produces folded structures, docked poses, interaction fingerprints, ML-scored rankings, and a shortlist of promising candidates for wet-lab follow-up.
+Stand up a reproducible, cross-platform Jupyter pipeline that, given a target protein (sequence or PDB, **wild-type or mutant**) and a list of candidate ligands (SMILES), produces folded structures, docked poses, interaction fingerprints, ML-scored rankings, and a shortlist of promising candidates for wet-lab follow-up — including the ability to compare WT vs mutant runs side-by-side for drug-resistance / mechanism-of-resistance studies.
 
 ## 2. Design principles
 
@@ -46,10 +47,14 @@ AIinDD2025/                              # repo root (rename to something projec
 │
 ├── notebooks/                           # user-facing entry points
 │   ├── 00_quickstart.ipynb              # smallest happy-path example, ~3 min on Colab
-│   ├── 01_fold_target.ipynb             # ColabFold / AlphaFold for the target sequence
+│   ├── 01_fold_target.ipynb             # ColabFold / AlphaFold for the target sequence (WT or mutant)
 │   ├── 02_prepare_ligands.ipynb         # SMILES → standardised → 3D conformers
-│   ├── 03_dock.ipynb                    # DiffDock (or Vina) on the prepared inputs
-│   ├── 04_score_and_rank.ipynb          # IFPs, ML rescoring, shortlist export
+│   ├── 03_dock_gnina.ipynb              # gnina docking + PoseBusters QC
+│   ├── 04_score_classical.ipynb         # IFPs, ML rescoring
+│   ├── 05_dock_boltz.ipynb              # Boltz-2 co-folding + affinity (fast lane)
+│   ├── 06_consensus_and_shortlist.ipynb # consensus ranker → shortlist.sdf
+│   ├── 07_mutation_analysis.ipynb       # diff WT vs mutant runs (structure, IFP, shortlist)
+│   ├── 99_screen_library.ipynb          # end-to-end runner, accepts a mutations= list
 │   └── 99_explore_course_examples/      # frozen copies of the most useful course nbs
 │
 ├── src/aidd/                            # importable package
@@ -163,3 +168,43 @@ Re-sequenced for the hybrid stack. Each step has a clear "done" signal so we can
 11. **`notebooks/05_dock_boltz.ipynb`** — Boltz-2 co-folding + affinity on the same ligand set; Colab notebook. **Done when** affinity scores correlate (Spearman ρ > 0.3) with the labels.
 12. **`notebooks/06_consensus_and_shortlist.ipynb`** — joins outputs from #10 and #11, applies the consensus rule (top-X% in both), emits `shortlist.sdf` + `shortlist.csv` with per-compound poses, IFPs, scores, ADMET flags. **Done when** the shortlist on ERK2 contains a respectable fraction of the labelled actives (sanity check before going to real target).
 13. **Second prune pass.** REFERENCE notebooks whose code we have fully lifted are removed from `_archive/`. **Done when** `_archive/` only contains items we haven't extracted yet.
+
+## 8. Mutation analysis — first-class workflow feature
+
+### Why it matters
+
+In oncology, **resistance mutations** are the central failure mode of small-molecule kinase inhibitors. The clinical pattern: a drug works initially, the tumour evolves a single amino-acid change that reshapes the binding pocket or the protein's conformation, and the drug loses potency. Classic examples — EGFR T790M (osimertinib resistance), BRAF V600E (vemurafenib activation), ABL T315I in CML, KIT D816V in mastocytosis — define the prescribing landscape for second- and third-line therapies. Any pipeline aimed at cancer drug discovery has to be able to answer "what happens to my candidates when I run them against the mutant?".
+
+The pipeline is **target-agnostic by design**, so mutations are not a special case: a mutant sequence flows through the same notebooks as the wild-type, and the comparison is a separate dedicated notebook.
+
+### Levels of investigation supported
+
+| Level | Question | How the pipeline answers it | Effort beyond a normal WT run |
+|---|---|---|---|
+| **1. Mutant structure** | "What does the mutant look like?" | Notebook 01 with the mutant sequence | None (just paste the sequence) |
+| **2. Structural difference** | "How is the mutant fold different from WT?" | `aidd.structures.ca_rmsd` + `distogram` + visual diff in notebook 07 | None (helpers already exist) |
+| **3. Stability change (ΔΔG)** | "Is the mutant more / less stable?" | Future: wrap RaSP (open-source, ML-based) into `aidd.stability` + a cell in notebook 07 | ~1–2 days of integration work, deferred until requested |
+| **4. Effect on drug binding** | "Does my candidate library still bind the mutant?" | Run notebooks 02–06 against the mutant; notebook 07 diffs the consensus shortlists | ~2× compute (one full screen per genotype); no new code |
+| **5. Atom-level dynamics** | "Did the mutation change a hinge motion, allosteric loop?" | **Out of scope** (would require MD simulation, separate field) | Not planned |
+
+### Notebook 07 — `07_mutation_analysis.ipynb`
+
+**Purpose:** consume the outputs of two complete pipeline runs (WT and mutant) and produce a clinically-meaningful comparison.
+
+**Inputs:** two `data/derived/<target>/` directories — one labelled WT, one a mutant variant (e.g. `data/derived/erk2_wt/` and `data/derived/erk2_M106T/`).
+
+**Outputs:**
+- Cα-RMSD and pTM/pLDDT comparison between the two folds (level 1+2).
+- IFP-level diff: which interactions are gained / lost in the mutant pocket.
+- Side-by-side 3-D viewer of WT and mutant binding pockets.
+- Diff of the two final shortlists: compounds that drop out, compounds that survive, compounds that newly appear.
+- A summary table fit for a wet-lab handoff: "in WT we'd prioritise these N compounds; in the mutant the priorities reshuffle to these M, of which X are new candidates".
+
+**When built:** after notebook 06. The mutation comparison is built on top of the consensus shortlist, so it cannot land before 06 does.
+
+**Effort estimate:** 1–2 days. Most of the work is a comparison notebook; the underlying helpers (`ca_rmsd`, `distogram`, `compute_ifp`) already exist.
+
+### Implications for downstream architecture
+
+- **Notebook 99 (production runner)** must accept a `mutations` parameter (list of variants to run alongside the WT). Each mutant becomes its own `data/derived/<target>_<mutation>/` directory; notebook 07 is invoked once per mutant to produce the comparison artefacts.
+- **`data/derived/` naming convention** is updated to allow per-variant subdirectories: `data/derived/<target>[_<variant>]/<stage>/`. Wild-type omits the variant suffix.
