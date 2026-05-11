@@ -2,6 +2,25 @@
 
 The user-facing entry points for the aidd-pipeline. Each numbered notebook covers **one pipeline stage** and is independently runnable, given the previous stage's cached outputs on disk under `data/derived/<target>/<stage>/`.
 
+## Two files per notebook — read this first
+
+Every notebook in this folder has **two paired files**:
+
+| File | Purpose |
+|---|---|
+| `_build_<name>.py` | **Source of truth.** Contains every cell as a Python string. This is what Claude / contributors edit. |
+| `<name>.ipynb` | **Generated artefact.** Produced by running the builder. This is what *you* run in Jupyter / VS Code / Colab. Cell outputs accumulate here when you run the notebook and are tracked in git so reviewers see results. |
+
+To regenerate the notebook from the source:
+
+```bash
+python notebooks/_build_<name>.py
+```
+
+**Do not edit the `.ipynb` directly** — any change there gets overwritten on the next regen. If you spot something you want to tweak, change `_build_<name>.py` instead (and re-run the builder), or tell Claude. The full rule set is in [`../CLAUDE.md`](../CLAUDE.md) § *Notebook workflow*.
+
+The builders share three small helpers from [`_nb_helpers.py`](_nb_helpers.py): `markdown(...)`, `code(...)`, and `notebook(...)`. Cells are emitted in the order the builder calls them — read a builder top-to-bottom and you read the notebook top-to-bottom.
+
 ## How to use this folder
 
 **First time / learning mode** — open the notebooks in numerical order (`00` → `06`) and run them cell by cell. Each notebook has markdown blocks explaining both the biology and the technical choices, with a learning-objectives header and a recap at the end. Designed for clinicians, ML/data folks new to structural biology, and Bachelor / Master students.
@@ -21,16 +40,16 @@ SMILES library ──► 02_prepare ──────┤                       
 
 ## The notebooks
 
-| #   | File                                  | Stage                                        | Where it runs        | Status |
-|-----|---------------------------------------|----------------------------------------------|----------------------|--------|
-| 00  | `00_quickstart.ipynb`                 | IFP demo on ERK2 (sanity check)              | local CPU / Colab    | ✅ done |
-| 01  | `01_fold_target.ipynb`                | ColabFold target structure prediction         | **Colab GPU**        | planned |
-| 02  | `02_prepare_ligands.ipynb`            | SMILES → standardised → drug-like → 3-D       | local CPU / Colab    | ✅ done |
-| 03  | `03_dock_gnina.ipynb`                 | gnina docking + PoseBusters QC                | local CPU / Colab    | planned |
-| 04  | `04_score_classical.ipynb`            | IFP + ML rescorer (sklearn / XGBoost)         | local CPU / Colab    | planned |
-| 05  | `05_dock_boltz.ipynb`                 | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | planned |
-| 06  | `06_consensus_and_shortlist.ipynb`    | consensus rank → `shortlist.sdf`              | local CPU / Colab    | planned |
-| 99  | `99_screen_library.ipynb`             | end-to-end runner for routine screens         | Colab Pro+ recommended | planned (after 06) |
+| #   | Builder                                  | Notebook                            | Stage                                        | Where it runs        | Status |
+|-----|------------------------------------------|-------------------------------------|----------------------------------------------|----------------------|--------|
+| 00  | `_build_00_quickstart.py`                | `00_quickstart.ipynb`               | IFP demo on ERK2 (sanity check)              | local CPU / Colab    | ✅ done |
+| 01  | `_build_01_fold_target.py`               | `01_fold_target.ipynb`              | ColabFold target structure prediction         | **Colab GPU**        | planned |
+| 02  | `_build_02_prepare_ligands.py`           | `02_prepare_ligands.ipynb`          | SMILES → standardised → drug-like → 3-D       | local CPU / Colab    | ✅ done |
+| 03  | `_build_03_dock_gnina.py`                | `03_dock_gnina.ipynb`               | gnina docking + PoseBusters QC                | local CPU / Colab    | planned |
+| 04  | `_build_04_score_classical.py`           | `04_score_classical.ipynb`          | IFP + ML rescorer (sklearn / XGBoost)         | local CPU / Colab    | planned |
+| 05  | `_build_05_dock_boltz.py`                | `05_dock_boltz.ipynb`               | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | planned |
+| 06  | `_build_06_consensus_and_shortlist.py`   | `06_consensus_and_shortlist.ipynb`  | consensus rank → `shortlist.sdf`              | local CPU / Colab    | planned |
+| 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner for routine screens         | Colab Pro+ recommended | planned (after 06) |
 
 Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold) and `05` (Boltz-2); the others run faster locally but work in Colab too.
 

@@ -29,6 +29,38 @@ The user is Natallia, a medical doctor in oncology / cancer genetics; not a soft
 - Don't add backwards-compat shims, feature flags, or defensive error handling for cases that can't happen. Trust internal code; only validate at external boundaries (user-supplied SMILES, file uploads).
 - Don't refactor surrounding code while fixing a bug — make the smallest change that addresses the request.
 
+## Notebook workflow (mandatory)
+
+**The source of truth is a Python builder script, not the .ipynb.** This is non-negotiable.
+
+| File | Role |
+|---|---|
+| `notebooks/_build_<name>.py` | **Source.** All notebook content lives here as Python literals (markdown strings, code-cell strings, helper functions, the call to `nbformat.write`). Always tracked in git. |
+| `notebooks/<name>.ipynb` | **Generated artefact.** Tracked in git with cell outputs *after the user runs it*, so reviewers see results without having to execute anything. Never authored directly. |
+
+Workflow:
+
+1. Edit `_build_<name>.py`.
+2. Run `python notebooks/_build_<name>.py` to regenerate the `.ipynb`.
+3. The user opens `<name>.ipynb` in VS Code / Jupyter / Colab and runs it.
+
+Rules:
+
+- **Never edit `<name>.ipynb` directly.** Edits there get overwritten on the next regen. Always change the builder.
+- **Regenerate before committing** whenever the builder changes, so the committed `.py` and `.ipynb` are in sync. The user should not be the one running the regenerator.
+- **Do not strip outputs** with `nbstripout` or any pre-commit hook. Outputs are intentionally preserved in git.
+- **If the `.ipynb` has diverged from what the builder would produce** (because the user experimented in Jupyter), do not silently overwrite. Surface the diff and ask whether to (a) regenerate and lose the experiments, or (b) port them back into the builder first.
+- Use `nbformat` (already installed via Jupyter) for the builder. No Jupytext / MyST / other alternatives.
+
+Cells are emitted via shared helpers in `notebooks/_nb_helpers.py`:
+
+- `markdown("""…""")` for markdown cells
+- `code("""…""")` for code cells
+- `notebook(*cells)` for assembly with our kernel metadata
+- `save(nb, path)` for writing
+
+**Cells appear in the builder in narrative order** — the builder reads top-down as the rendered notebook does, so there is no separate "content constants → assembly list" indirection.
+
 ## Notebook conventions (structural)
 
 - First cell: title + one-paragraph plain-language description, learning objectives, audience, prerequisites (see *Notebook pedagogy* below).
