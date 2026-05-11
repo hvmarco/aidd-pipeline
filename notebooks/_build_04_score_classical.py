@@ -196,7 +196,7 @@ print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
 """),
 
-        code(title="Imports + Drive mount", source=AUTORELOAD_SNIPPET + """
+        code(title="Imports", source=AUTORELOAD_SNIPPET + """
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -221,14 +221,34 @@ from aidd.scoring import (
 )
 from aidd.structures import superpose_by_resnum
 
-# Same Drive-persistence pattern as notebooks 02 and 03 — the docking cache
-# alone is hundreds of MB and would not survive a Colab runtime kill.
-USE_DRIVE = IS_COLAB
-DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
-
 sns.set_theme(style="whitegrid")
+print("imports ok")
+"""),
+
+        markdown("""
+### ⚠ Google Drive authorization — read this before running the next cell
+
+The docking cache for this notebook is **hundreds of megabytes** and takes 60–90 min of GPU time to build. We default to writing it on Google Drive so it survives Colab runtime restarts (idle timeout, browser close, disconnect). The first time you run the next cell on Colab, you will see a Drive permission dialog — click through to allow.
+
+**If you do not want to authorize Google Drive**, change the line `USE_DRIVE = IS_COLAB` in the next cell to `USE_DRIVE = False` *before* running it. The notebook will still run end-to-end; caches go to `/content/aidd-pipeline/data/derived/` on the Colab session disk and **disappear when the runtime ends** — you'll have to redo the docking on every reconnect.
+
+If you accidentally dismiss the Drive dialog (clicking outside it, closing the tab), the cell will crash. Re-run it and either authorize, or change the line to `False` first.
+"""),
+
+        code(title="Drive persistence toggle  (change to False to opt out)", source="""
+# ════════════════════════════════════════════════════════════════════════
+# GOOGLE DRIVE AUTHORIZATION
+# On Colab, the next call will prompt for Drive permission on first use.
+#
+# →  To OPT OUT of Drive, change the line below to:    USE_DRIVE = False
+#    (caches then live on /content/ and disappear when the runtime ends)
+# ════════════════════════════════════════════════════════════════════════
+USE_DRIVE = IS_COLAB   # ←── change to False if you do NOT want Drive
+
+DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
+print(f"USE_DRIVE: {USE_DRIVE}  "
+      f"({'Drive-backed (persistent)' if USE_DRIVE else 'local /content (ephemeral, lost on runtime kill)'})")
 print(f"DATA_ROOT: {DATA_ROOT}")
-print("setup ok")
 """),
 
         markdown("""

@@ -207,18 +207,34 @@ from aidd.folding import parse_colabfold_ranking, best_model_path, summarise_run
 from aidd.viz import show_structure_colored_by_plddt
 from aidd.io import mount_drive_if_colab, pretty_path
 
-# Set up the data/derived/ root. On Colab this mounts Google Drive (one
-# OAuth prompt on first call per runtime, then silent) and resolves to a
-# Drive-backed path so the folded structure survives runtime deaths.
-# Locally, it resolves to <repo_root>/data/derived/, unchanged from before.
-# Flip USE_DRIVE = False to opt out (one-off Colab testing without a Drive
-# auth prompt, or to keep outputs purely on /content/).
-USE_DRIVE = IS_COLAB
-DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
-
 sns.set_theme(style="whitegrid")
+print("imports ok")
+"""),
+
+        markdown("""
+### ⚠ Google Drive authorization — read this before running the next cell
+
+The folded structure produced by this notebook (~MB-scale per model) is the input for docking (notebook 03) and downstream analysis. We default to writing it on Google Drive so it survives Colab runtime restarts (idle timeout, browser close, disconnect). The first time you run the next cell on Colab, you will see a Drive permission dialog — click through to allow.
+
+**If you do not want to authorize Google Drive**, change the line `USE_DRIVE = IS_COLAB` in the next cell to `USE_DRIVE = False` *before* running it. The notebook will still run end-to-end; the folded model goes to `/content/aidd-pipeline/data/derived/` on the Colab session disk and **disappears when the runtime ends** — you'll have to redo the ~30 min fold on every reconnect.
+
+If you accidentally dismiss the Drive dialog (clicking outside it, closing the tab), the cell will crash. Re-run it and either authorize, or change the line to `False` first.
+"""),
+
+        code(title="Drive persistence toggle  (change to False to opt out)", source="""
+# ════════════════════════════════════════════════════════════════════════
+# GOOGLE DRIVE AUTHORIZATION
+# On Colab, the next call will prompt for Drive permission on first use.
+#
+# →  To OPT OUT of Drive, change the line below to:    USE_DRIVE = False
+#    (caches then live on /content/ and disappear when the runtime ends)
+# ════════════════════════════════════════════════════════════════════════
+USE_DRIVE = IS_COLAB   # ←── change to False if you do NOT want Drive
+
+DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
+print(f"USE_DRIVE: {USE_DRIVE}  "
+      f"({'Drive-backed (persistent)' if USE_DRIVE else 'local /content (ephemeral, lost on runtime kill)'})")
 print(f"DATA_ROOT: {DATA_ROOT}")
-print("setup ok")
 """),
 
         markdown("""
