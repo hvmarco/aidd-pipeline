@@ -1,12 +1,10 @@
 # CLAUDE.md — rules for Claude sessions on this project
 
-Draft. Promote to `/CLAUDE.md` at the repo root once we initialise git.
-
 ## Project context
 
 End-to-end in-silico screening pipeline (sequence/PDB + SMILES → folded structure → docked poses → ranked shortlist). Notebook-driven (must work in Colab, Windows, Mac), with reusable Python modules under `src/aidd/`. Built by lifting working code from a Leiden/CDD AI-in-Drug-Discovery 2025 course (now under `_archive/`).
 
-The user is not a software engineer by training — favour clarity over cleverness, name things from a chemist's perspective ("ligand", "pose", "binding site"), and link to the relevant course notebook in `_archive/` when adapting code from it.
+The user is Natallia, a medical doctor in oncology / cancer genetics; not a software engineer or ML researcher. Favour clarity over cleverness, name things from a chemist's perspective ("ligand", "pose", "binding site"), and link to the relevant course notebook in `_archive/` when adapting code from it.
 
 ## Stack & platform rules
 
@@ -31,14 +29,45 @@ The user is not a software engineer by training — favour clarity over cleverne
 - Don't add backwards-compat shims, feature flags, or defensive error handling for cases that can't happen. Trust internal code; only validate at external boundaries (user-supplied SMILES, file uploads).
 - Don't refactor surrounding code while fixing a bug — make the smallest change that addresses the request.
 
-## Notebook conventions
+## Notebook conventions (structural)
 
-- First cell: title + one-sentence description of what the notebook does and roughly how long it takes.
-- Second cell: install/import block. Use `try: import x; except: !pip install x` so the same notebook works in Colab and in a pre-set-up local env.
-- Third cell: detect the environment (`is_colab = "google.colab" in sys.modules`) and set platform-specific paths.
+- First cell: title + one-paragraph plain-language description, learning objectives, audience, prerequisites (see *Notebook pedagogy* below).
+- Setup cells: install/import block (`try: import x; except: !pip install x`) followed by env detection (`is_colab = "google.colab" in sys.modules`) and path setup. Include `%load_ext autoreload; %autoreload 2` so iterative edits to `src/aidd/` don't require kernel restarts.
 - Use `tqdm` for any loop over ligands/poses.
-- Use `py3Dmol` (not nglview) for in-notebook 3D — works reliably in Colab and JupyterLab without extension dances. Pattern is in `_archive/Week_3_Monday_Docking_and_Scoring.ipynb`.
+- Use `py3Dmol` (not nglview) for in-notebook 3D — works reliably in Colab, VS Code, and JupyterLab without extension dances. Pattern is in `_archive/Week_3_Monday_Docking_and_Scoring.ipynb`.
 - Avoid `nglview` unless the user explicitly asks — the JupyterLab extension setup is painful and doesn't survive Colab.
+
+## Notebook pedagogy (mandatory)
+
+**The notebooks teach as much as they compute.** They are read by:
+- Colleagues running the pipeline in parallel — mixed biomed / data / ML backgrounds.
+- Non-native English speakers — language must be simple.
+- Bachelor / Master students writing their thesis — entry-level accessible.
+- Department heads, senior researchers, funding-agency auditors — must look scientifically sound and reflect state-of-the-art methods.
+
+The Leiden/ULLA course archived in `_archive/` is the style reference: pedagogical AND state-of-the-art at the same time.
+
+**Every notebook follows this shape:**
+
+1. **Title cell.** Project line + one-paragraph plain-language description of what the notebook does. **Learning objectives** (4–6 bullets). **Audience** ("you'll get value if you are…"). **Prerequisites** (env / data / prior notebooks).
+2. **"Key terms" block** near the top (or inline definitions later). Define every jargon term and abbreviation on first use anywhere in the notebook.
+3. **For each working section**, the shape is:
+   - **Markdown — Background.** What this concept is (biomedically AND technically), why it matters clinically/scientifically, how it fits the pipeline. 2–4 short paragraphs max.
+   - **Markdown — What this cell does.** One short sentence orienting before the compute. Vary the lead-in; don't write "In this cell we will…" every time.
+   - **Code cell.**
+   - **Markdown — Interpreting the output.** What to look at, what the numbers mean, what's "good" vs "bad", state-of-the-art thresholds where relevant, common pitfalls.
+4. **Recap cell** at the bottom: biomedical takeaway (one short paragraph), technical takeaway (one short paragraph), pointer to the next notebook in the pipeline, 2–3 further-reading references (paper DOIs or canonical docs, not random blog posts).
+
+**Writing rules:**
+
+- **Plain language. No jargon without definition.** "Pi-stacking" gets a one-line explanation the first time it appears.
+- Short sentences. Active voice. Avoid idioms and figures of speech (the audience includes ESL readers).
+- No filler ("Note that…", "It is important to mention that…", "Basically…"). Just say it.
+- Expand every abbreviation on first use: "AlphaFold (AF)", "interaction fingerprint (IFP)".
+- Where possible, give a clinical or wet-lab analogue ("docking is the in-silico version of a binding assay").
+- Acknowledge the state of the art **and** what we're using **and** why. Don't oversell our choices; mention limits honestly.
+- Don't talk down. Assume a smart non-expert — give them the bridge, not a lecture.
+- **Teaching goes in markdown cells, not code comments.** The `Code style (Python)` rules above still apply to the cells themselves: minimal inline comments, clean code.
 
 ## Dependencies & environments
 
