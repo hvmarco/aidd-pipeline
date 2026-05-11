@@ -137,13 +137,21 @@ def show_interactions_3d(
     return view
 
 
-def show_interaction_network(fp, *, kind: str = "frame", **kwargs):
+def show_interaction_network(fp, ligand_mol, *, kind: str = "frame", **kwargs):
     """Draw ProLIF's 2D LigNetwork diagram and return it for notebook display.
 
     Thin convenience wrapper around ``prolif.plotting.network.LigNetwork``; see
-    that class for full kwargs. ``kind="frame"`` shows one pose, ``"aggregate"``
-    averages over all poses.
+    that class for full kwargs. ``kind="frame"`` shows one pose,
+    ``"aggregate"`` averages over all poses.
+
+    Parameters
+    ----------
+    fp
+        A fitted ``prolif.Fingerprint``.
+    ligand_mol
+        The ligand ``plf.Molecule`` used to compute ``fp`` (LigNetwork needs it
+        for the 2D ligand drawing).
     """
     from prolif.plotting.network import LigNetwork
 
-    return LigNetwork.from_fingerprint(fp, kind=kind, **kwargs).display()
+    return LigNetwork.from_fingerprint(fp, ligand_mol, kind=kind, **kwargs).display()
