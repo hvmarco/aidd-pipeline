@@ -20,6 +20,8 @@
 | Notebook structure | locked | **8 teaching notebooks (00–07) + 1 production runner (99)**, each numbered notebook is one pipeline stage; each is independently runnable from cached intermediate outputs in `data/derived/<target>/<stage>/`. The runner (99) is built last, after 07. |
 | Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 07 (`07_mutation_analysis`)** compares WT vs mutant outputs (structure, IFP, docking shortlist) for drug-resistance / structural-impact studies. See §8. |
 | AF3 fold provider toggle in notebook 99 | locked | Notebook 99 (production runner) gets an **optional `FOLD_PROVIDER` parameter** with values `"colabfold"` (AF2, default — open and reproducible for all users) and `"af3_server"` (AlphaFold Server API — requires per-user academic API key in Colab Secrets, owner-only path). Both branches produce the same canonical `<target>_best.pdb` so downstream cells don't care which folder was used. Single notebook with one toggle, not two parallel notebooks. See §9. |
+| Research-domain focus | locked (2026-05-12) | The pipeline is **shaped for pharmacogenomics + variant-function studies in common solid tumours** (colorectal, lung, breast, GI, GU, ovarian). The central question is "*how does an amino-acid variant change enzyme function / drug binding?*" — not generic SBVS. **Notebook 07 (mutation analysis) is the headline notebook**, not an extension. Notebook 99 takes `(target, variants=[…])` and runs the WT-vs-variant comparison as its primary mode. The four headline demos are listed in §10. |
+| Post-13-step roadmap | locked (2026-05-12) | After steps 1–13 close, the prioritised additions are: **(1) AlphaMissense lookup** (zero-compute pathogenicity scores per variant) — ~½ day; **(2) RaSP ΔΔG integration** for loss-of-function variants — ~1–2 days; **(3) PharmGKB / CPIC clinical ground-truth lookup** — ~1–2 days; **(4) fpocket binding-site detection** on variant folds — ~1 day. See §11 for the rationale and ordering. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
@@ -170,13 +172,20 @@ Re-sequenced for the hybrid stack. Each step has a clear "done" signal so we can
 12. **`notebooks/06_consensus_and_shortlist.ipynb`** — joins outputs from #10 and #11, applies the consensus rule (top-X% in both), emits `shortlist.sdf` + `shortlist.csv` with per-compound poses, IFPs, scores, ADMET flags. **Done when** the shortlist on ERK2 contains a respectable fraction of the labelled actives (sanity check before going to real target).
 13. **Second prune pass.** REFERENCE notebooks whose code we have fully lifted are removed from `_archive/`. **Done when** `_archive/` only contains items we haven't extracted yet.
 
-## 8. Mutation analysis — first-class workflow feature
+## 8. Mutation analysis — the headline workflow
+
+**(Promoted from "extension" to "headline" on 2026-05-12 — see §10.)**
 
 ### Why it matters
 
-In oncology, **resistance mutations** are the central failure mode of small-molecule kinase inhibitors. The clinical pattern: a drug works initially, the tumour evolves a single amino-acid change that reshapes the binding pocket or the protein's conformation, and the drug loses potency. Classic examples — EGFR T790M (osimertinib resistance), BRAF V600E (vemurafenib activation), ABL T315I in CML, KIT D816V in mastocytosis — define the prescribing landscape for second- and third-line therapies. Any pipeline aimed at cancer drug discovery has to be able to answer "what happens to my candidates when I run them against the mutant?".
+In oncology, **amino-acid variants in or near the active sites of enzymes** drive the entire clinical landscape. Two mechanisms dominate:
 
-The pipeline is **target-agnostic by design**, so mutations are not a special case: a mutant sequence flows through the same notebooks as the wild-type, and the comparison is a separate dedicated notebook.
+- **Resistance mutations**: a drug works initially, the tumour evolves a single amino-acid change that reshapes the binding pocket, and the drug loses potency. Classic examples — EGFR T790M (osimertinib resistance), BRAF V600E (vemurafenib activation), ESR1 Y537S (tamoxifen resistance), ABL T315I — define the prescribing landscape for second- and third-line therapies.
+- **Pharmacogenomic loss-of-function**: germline variants in drug-metabolising enzymes (DPYD, UGT1A1, NAT2, TPMT, CYP2D6) change how patients metabolise standard chemotherapy. DPYD\*2A homozygotes given full-dose 5-FU experience life-threatening toxicity; the pharmacogene structural change is the mechanism.
+
+Any pipeline aimed at cancer drug discovery — but *especially* one shaped for common solid tumours and precision oncology — has to answer "*what happens when I run this variant against the same drugs and substrates as the wild-type?*"
+
+The pipeline is **target-agnostic by design**, so the same notebooks (01–06) accept a mutant sequence with no code changes; the comparison is then a dedicated notebook (07) that diffs the two `data/derived/<target>[_<variant>]/` trees.
 
 ### Levels of investigation supported
 
@@ -259,3 +268,103 @@ The folding cell dispatches on `FOLD_PROVIDER`. Both branches produce the same c
 ### When this lands
 
 After notebook 99's first build (which uses only `FOLD_PROVIDER="colabfold"`). The AF3 path is an additive feature, not a prerequisite for shipping 99.
+
+## 10. Research-domain focus: pharmacogenomics + variant-function in common solid tumours
+
+### What the pipeline is *for*, in one sentence
+
+Predict how amino-acid variants in or near the active sites of cancer-relevant enzymes change drug binding, substrate metabolism, or protein function — for the common solid tumours (**colorectal, lung, breast, ovarian, GI, GU**) where amino-acid substitutions in active sites drive both **oncogenesis** and **drug response**.
+
+This is the project owner's actual research domain. The pipeline is *not* "yet another generic SBVS pipeline"; it is shaped to answer the specific class of clinical question her work asks.
+
+### How this shapes the existing notebooks
+
+The pipeline code is **largely unchanged**; the framing, examples, and pedagogical emphasis shift:
+
+| Notebook | Scale of change | What changes |
+|---|---|---|
+| 00 quickstart       | None     | ERK2 sanity-check stays as a *technical* demo |
+| 01 fold_target      | Light    | Markdown: emphasise "fold WT + variant side-by-side"; example becomes DPYD WT + DPYD\*2A |
+| 02 prepare_ligands  | Light    | Framing: examples include known substrates (5-FU, irinotecan) alongside inhibitors |
+| 03 dock_gnina       | Moderate | Add **"substrate-binding vs inhibitor-binding"** markdown section; interpret scores accordingly |
+| 04 score_classical  | Light    | Examples and feature framing update; mechanics unchanged |
+| 05 dock_boltz       | Light    | Examples update |
+| 06 consensus        | Light    | Examples update |
+| **07 mutation_analysis** | **Major (headline)** | DPYD walkthrough as pedagogical centrepiece + AlphaMissense + RaSP + substrate framing + 3 brief additional demos |
+| **99 runner**       | **Major** | Re-shaped to take `(target, variants=[…])`; default examples are the headline-demo set; AF3 toggle stays |
+
+### Headline demo set (notebook 07 + notebook 99 defaults)
+
+Four cases covering all the named cancer types and the four distinct mutation mechanisms encountered in clinical oncology:
+
+| Demo | Cancer(s) | Mechanism | Drug / substrate |
+|---|---|---|---|
+| **DPYD\*2A + 5-FU** *(deep walkthrough)* | colorectal | pharmacogene loss-of-function (splice-variant LoF) | 5-fluorouracil (substrate) |
+| **KRAS G12C + sotorasib** | colorectal, lung, pancreatic | GTPase oncogenic driver | sotorasib (covalent inhibitor) |
+| **ESR1 Y537S + tamoxifen** | breast | nuclear-receptor ligand-binding-domain hot-spot (GoF / endocrine resistance) | tamoxifen / fulvestrant |
+| **BRCA1 LoF + olaparib** | ovarian, breast | synthetic-lethality LoF (drug binds PARP, not BRCA — the mutation creates the vulnerability) | olaparib (PARP-bound) |
+
+Each illustrates a *distinct* clinical mechanism — pharmacogene LoF, oncogenic driver, ligand-pocket GoF, synthetic-lethality LoF. The deep walkthrough (DPYD) gets the full pedagogical structure; the other three get brief "*the same pattern applies here*" sections at the end of notebook 07.
+
+### Why these four
+
+- **Covers all named cancer types** (colorectal, lung, breast, ovarian; GI / GU covered by colorectal + pancreatic).
+- **Covers all four major mutation mechanisms** clinicians encounter.
+- **All four have clinical ground truth** (CPIC guidelines for DPYD; FDA labels for sotorasib, fulvestrant, olaparib). Predictions are falsifiable.
+- **DPYD as the walkthrough specifically** because: most clinically actionable example in colorectal cancer; demonstrates *substrate* binding (the framing shift); is a *loss-of-function* variant (exercises the RaSP integration).
+
+### TP53 R175H as a future "no-paired-drug" demo
+
+A fifth demo, useful later: TP53 R175H is the #1 most-mutated variant across all cancers, and is structurally a "loss-of-structural-integrity" case — perfect RaSP showcase. No direct drug (TP53 isn't directly druggable in the standard sense), so it sits naturally as a "*here's what the pipeline shows when no drug exists yet*" example. Add when the four headline demos are stable.
+
+## 11. Post-13-step roadmap — pharmacogenomics-aligned extensions
+
+These additions extend the pipeline's coverage beyond the closed-out 13-step plan. They are **not** prerequisites for shipping the production runner (99) — they are enhancements specifically tuned to the §10 research focus. Listed in priority order by value-per-effort for this domain.
+
+### Priority 1 — AlphaMissense lookup (~½ day)
+
+**What:** DeepMind's [AlphaMissense](https://www.science.org/doi/10.1126/science.adg7492) model (2023) scores every possible missense variant in the human proteome with a pathogenicity probability. Pre-computed scores are downloadable; we look up the answer rather than running the model.
+
+**Why for this pipeline:** independent of structure-based ΔΔG, AlphaMissense gives a sequence/evolution-based pathogenicity signal. Combine the two and the pipeline can say "this variant is flagged pathogenic by AlphaMissense AND we can structurally explain why" — much stronger claim than either signal alone. Drops in as a feature column in notebook 07.
+
+**Integration:** new helper `aidd.variants.alphamissense_score(uniprot_id, position, alt_aa)`. ~50 lines plus a one-time download of the supplementary CSV (~5 GB). Added as a column to notebook 07's variant-analysis output.
+
+### Priority 2 — RaSP ΔΔG prediction (~1–2 days)
+
+**What:** [RaSP](https://elifesciences.org/articles/82593) (Rapid Stability Predictions, 2023) is an open-source ML-based predictor of variant stability changes (ΔΔG, kcal/mol). Runs in seconds per mutation on CPU.
+
+**Why for this pipeline:** for **loss-of-function variants** (DPYD, BRCA1, MMR, TP53), stability change is the *primary* mechanism — the protein doesn't fold correctly or doesn't stay folded. Binding-affinity prediction misses this entirely. ΔΔG fills the gap.
+
+**Integration:** new module `aidd.stability` wrapping RaSP. New section of notebook 07 reports per-variant ΔΔG alongside the existing structural / IFP / docking diffs. The DPYD walkthrough specifically showcases this — DPYD\*2A is a splice variant whose stability impact is the headline.
+
+### Priority 3 — PharmGKB / CPIC clinical-ground-truth lookup (~1–2 days)
+
+**What:** [PharmGKB](https://www.pharmgkb.org) is the authoritative pharmacogenomics knowledge base; [CPIC](https://cpicpgx.org/) publishes formal clinical guidelines on gene-drug-phenotype interactions. Together they cover every clinically-relevant DPYD / UGT1A1 / NAT2 / CYP2D6 / TPMT variant with metabolizer phenotype and dose recommendations.
+
+**Why for this pipeline:** gives **falsifiable ground truth** for validation. "*Pipeline predicts DPYD\*2A reduces 5-FU binding by N kcal/mol → CPIC says DPYD\*2A homozygotes need 5-FU dose reduced by 50% → pipeline prediction is consistent with clinical practice.*" Without this, the pipeline produces numbers nobody can score against reality.
+
+**Integration:** new module `aidd.pharmacogenomics` that pulls relevant entries by gene + variant. Mostly metadata curation work, not heavy code.
+
+### Priority 4 — fpocket binding-site detection on variant folds (~1 day)
+
+**What:** [fpocket](https://github.com/Discngine/fpocket) is a fast pocket-detection tool. Takes a PDB, returns ranked pockets with centre + radius + volume.
+
+**Why for this pipeline:** for *any* pharmacogene the project owner takes on beyond the demo set, hand-curating a binding-site box is the manual step that won't scale. fpocket on WT and on the variant fold ALSO gives "*pocket volume changed from N to M Å³*" as a direct readout of the variant's structural impact — independent signal beyond ΔΔG.
+
+**Integration:** wraps in `aidd.docking` as an alternative to hand-curated binding-site coordinates. New cell in notebook 07 reporting pocket-geometry deltas WT vs variant.
+
+### Priority 5 — TeachOpenCADD T032-style proteochemometrics (~3–5 days)
+
+**What:** add **protein descriptors** alongside ligand descriptors so one model can predict binding across a *family* of related enzymes simultaneously.
+
+**Why for this pipeline:** drug-metabolising enzymes come in families (CYP1/2/3 subfamilies; UGT1A1–10; NAT1/NAT2; SULT family). A PCM model trained on a CYP3A4 dataset can generalise to predict CYP3A5 substrate preferences. Worth adding only if the research programme actually touches multiple enzymes in the same family.
+
+**Integration:** lifts directly from `_archive/PCM/talktorial.ipynb`. Becomes either a new notebook 10 or a section in 04.
+
+### What's *not* on this list
+
+For the record:
+
+- **KLIFS kinase-pocket alignment**: useful only for the kinase subset (EGFR, BRAF, HER2, PIK3CA, CDK4/6). The pharmacogene + DDR + nuclear-receptor sides of the research focus don't benefit. Worth adding only if work shifts to majority-kinase.
+- **ASAP-discovery free-energy methods (FEP)**: expensive both in compute and setup. Worth it for *publication-quality* binding-affinity claims on a small number of top compounds, not for routine triage. Keep as a "hero-number" tool, not a default.
+- **Y-randomisation / applicability domain** (Pat Walters' rigour patterns): added inside notebook 04 (step 10) as standard ML hygiene; doesn't need to be in this roadmap.
