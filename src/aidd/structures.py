@@ -17,7 +17,7 @@ from typing import Union
 
 import numpy as np
 import pandas as pd
-from Bio.PDB import PDBParser, Superimposer
+from Bio.PDB import PDBIO, PDBParser, Superimposer
 
 PathLike = Union[str, Path]
 
@@ -120,6 +120,71 @@ def distogram(path: PathLike, *, chain: str = "A") -> np.ndarray:
 # ---------------------------------------------------------------------------
 # Alignment + RMSD
 # ---------------------------------------------------------------------------
+
+def superpose_by_resnum(
+    mobile_pdb: PathLike,
+    reference_pdb: PathLike,
+    out_pdb: PathLike,
+    *,
+    chain: str = "A",
+    min_matched_residues: int = 10,
+) -> dict:
+    """Superpose a structure onto a reference by matched-residue-number Cα atoms.
+
+    Writes the transformed mobile structure to ``out_pdb`` and returns a dict
+    with the alignment RMSD plus the number of residues used to fit.
+
+    The intended use case is bringing an AlphaFold model into the coordinate
+    frame of a crystal structure so that crystal-frame binding-site
+    coordinates apply to both (i.e. the pipeline can dock the AF model from
+    notebook 01 using the binding-site center / radius derived from the
+    crystal in the archived PLANTS config).
+
+    The alignment uses Cα atoms whose residue numbers appear in *both*
+    structures on the same chain. Crystal structures typically miss flexible
+    loops; the matched-by-number subset is the well-resolved core, which is
+    what you want anchoring the alignment. Side-chain conformations are not
+    altered — only the rigid-body transform is applied.
+    """
+    parser = PDBParser(QUIET=True)
+    ref = parser.get_structure("ref", str(reference_pdb))
+    mob = parser.get_structure("mob", str(mobile_pdb))
+
+    def ca_by_resnum(structure) -> dict[int, "object"]:
+        for model in structure:
+            for ch in model:
+                if ch.id != chain:
+                    continue
+                return {r.id[1]: r["CA"] for r in ch if "CA" in r}
+            break
+        return {}
+
+    ref_ca = ca_by_resnum(ref)
+    mob_ca = ca_by_resnum(mob)
+    common = sorted(set(ref_ca) & set(mob_ca))
+    if len(common) < min_matched_residues:
+        raise ValueError(
+            f"Only {len(common)} residues match by number between "
+            f"{Path(mobile_pdb).name} and {Path(reference_pdb).name} on chain "
+            f"{chain!r} (need ≥ {min_matched_residues}). Cannot align."
+        )
+
+    sup = Superimposer()
+    sup.set_atoms([ref_ca[n] for n in common], [mob_ca[n] for n in common])
+    sup.apply(list(mob.get_atoms()))
+
+    out_pdb = Path(out_pdb)
+    out_pdb.parent.mkdir(parents=True, exist_ok=True)
+    io = PDBIO()
+    io.set_structure(mob)
+    io.save(str(out_pdb))
+
+    return {
+        "rmsd": float(sup.rms),
+        "n_matched_residues": len(common),
+        "out_path": out_pdb,
+    }
+
 
 def ca_rmsd(ref_pdb: PathLike, target_pdb: PathLike, *, chain: str = "A") -> float:
     """Cα-RMSD between two structures of equal length, after rigid superposition.

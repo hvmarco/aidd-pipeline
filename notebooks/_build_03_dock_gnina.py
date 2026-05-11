@@ -53,7 +53,8 @@ After running this notebook you will be able to:
 ## Prerequisites
 
 - **A Colab GPU runtime** (Runtime → Change runtime type → T4 GPU). The notebook is marked GPU by default; if you opened it on a CPU runtime, switch first. gnina v1.3 links against CUDA libraries and will not load on CPU runtimes.
-- The ERK2 crystal receptor (`data/structures/erk2_4fv7.pdb`) and its co-crystallised ligand (`data/ligands/erk2_4fv7_ref.pdb`) — both ship with the repo, so a fresh Colab clone has everything needed.
+- The ERK2 crystal receptor (`data/structures/erk2_4fv7.pdb`) and its co-crystallised ligand (`data/ligands/erk2_4fv7_ref.pdb`) — both ship with the repo and are always available on a fresh clone. The crystal is used for the redock sanity check and as the alignment reference (and as a fallback receptor when the AF model is not yet built).
+- *Optional but recommended*: notebook `01_fold_target` already run, with an AlphaFold model at `data/derived/<target>/fold/<target>_best.pdb`. When present, the cell below superposes it onto the crystal frame and uses the aligned PDB as the docking receptor (the standard pipeline path).
 - *Optional*: notebook `02_prepare_ligands` already run, with a prepared SDF at `data/derived/<target>/ligands_prepared.sdf`. If absent, this notebook prepares a 10-compound smoke-test subset inline.
 
 ## Runtime
@@ -243,7 +244,7 @@ if not gnina_available():
 
 Three things have to be set before we can dock:
 
-1. **The receptor.** A PDB file with the protein you want to dock into. For the ERK2 demo we use the **4FV7 crystal receptor** (`data/structures/erk2_4fv7.pdb`) by default — it ships with the repo (so a fresh Colab clone can run this notebook with no prerequisites), and the binding-site coordinates below were derived from it. To dock into the AlphaFold model from notebook `01` instead, you would first align it to the crystal coordinate frame so the search box still hits the pocket (a one-line `Bio.PDB.Superimposer` step on the chain Cα atoms). For a real target with no crystal you would use a pocket-detection tool such as fpocket or P2Rank on the AF model to derive the box dynamically. Both are out of scope for this teaching notebook.
+1. **The receptor.** A PDB file with the protein you want to dock into. The default is the **AlphaFold model from notebook `01`** (`data/derived/<target>/fold/<target>_best.pdb`) — that is the path the pipeline assumes for any target, whether or not a crystal exists. There is one subtlety: the AlphaFold model is in *some arbitrary coordinate frame* (whatever orientation AlphaFold happened to output), whereas the binding-site coordinates in §3 are in the **4FV7 crystal coordinate frame** (they were measured on the crystal). If we docked the un-aligned AF model with the crystal-frame box, the box would point at the wrong region of space. The fix is to **superpose the AF model onto the crystal** once at the top of the notebook, and dock the aligned PDB. The cell below does that automatically when the AF model exists, using matched-by-residue-number Cα atoms (the well-resolved structural core both share). When the AF model has not been built yet (notebook 01 not run), the cell falls back to the crystal receptor directly. For a real target with no crystal you would instead run a pocket-detection tool (fpocket, P2Rank) on the AF model to derive the box in the AF frame — that path is out of scope for this teaching notebook, marked as a TODO.
 2. **The ligand library.** The SDF written by notebook `02_prepare_ligands` (drug-like, PAINS-filtered, 3-D-embedded). If you have not run notebook 02 yet, the cell below falls back to preparing a small subset inline so this notebook is still runnable end-to-end as a smoke test.
 3. **The search box.** A cuboid in 3-D space the docker will sample inside. For a well-studied target like ERK2 we know the binding-site coordinates (they live in the archived PLANTS config). For a new target you would derive them from a co-crystallised ligand if you have one, or from a pocket-detection tool like fpocket or P2Rank.
 
@@ -261,23 +262,44 @@ gnina takes a *box* rather than a *sphere*; we convert by setting each box edge 
 Docking 100 prepared ligands at exhaustiveness 8 takes ~20–30 min on a Colab CPU. Set `SAMPLE_N = 10` for a quick first run while you wire everything up; bump it once the redock sanity check passes and you see the first few poses look reasonable.
 """),
 
-        code(title="Inputs: target, receptor, ligand SDF, binding-site geometry", source="""
+        code(title="Inputs: target, receptor (AF→crystal aligned), ligand SDF, box", source="""
+from aidd.structures import superpose_by_resnum
+
 TARGET = "erk2"
 
-# Receptor for the library dock. We default to the 4FV7 crystal because:
-#   (a) it ships with the repo, so a fresh Colab clone can run this notebook;
-#   (b) the binding-site coordinates below are in its coordinate frame.
-# To dock into the AlphaFold model from notebook 01, first align it to the
-# crystal frame, then set RECEPTOR to the aligned PDB.
-RECEPTOR = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
-
-# Reference receptor + ligand for the redock sanity check (same crystal).
+# Crystal receptor + ligand for the redock sanity check.
 CRYSTAL_RECEPTOR = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
-CRYSTAL_LIGAND   = REPO_ROOT / "data" / "ligands" / "erk2_4fv7_ref.pdb"
+CRYSTAL_LIGAND   = REPO_ROOT / "data" / "ligands"    / "erk2_4fv7_ref.pdb"
+
+# AF model from notebook 01 — gitignored, exists only after 01 has been run
+# on this machine / Colab runtime.
+AF_RECEPTOR = REPO_ROOT / "data" / "derived" / TARGET / "fold" / f"{TARGET}_best.pdb"
 
 # Where docking outputs land.
 OUT_DIR = REPO_ROOT / "data" / "derived" / TARGET / "docking"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Build the receptor for the library dock. The binding-site coordinates below
+# are in the 4FV7 crystal frame; if we have an AF model from notebook 01,
+# align it to that frame so the same box applies. If we don't, fall back to
+# the crystal receptor itself (so a fresh Colab clone can run this notebook
+# without having to run 01 first; this means we're effectively redocking
+# into the holo crystal, which is the optimistic / best-case scenario).
+if AF_RECEPTOR.exists():
+    ALIGNED_AF = AF_RECEPTOR.with_name(f"{TARGET}_best_aligned_to_4fv7.pdb")
+    if not ALIGNED_AF.exists():
+        info = superpose_by_resnum(AF_RECEPTOR, CRYSTAL_RECEPTOR, ALIGNED_AF)
+        print(
+            f"Aligned AF model onto 4FV7 crystal: "
+            f"RMSD {info['rmsd']:.2f} Å over {info['n_matched_residues']} Cα atoms"
+        )
+    RECEPTOR = ALIGNED_AF
+    RECEPTOR_KIND = "AlphaFold (notebook 01), aligned to 4FV7 crystal frame"
+else:
+    print("AF model from notebook 01 not found — falling back to the 4FV7 crystal.")
+    print("Run notebook 01 first to dock into the AlphaFold model instead.")
+    RECEPTOR = CRYSTAL_RECEPTOR
+    RECEPTOR_KIND = "4FV7 crystal (AF model unavailable)"
 
 # Ligand SDF: prefer notebook 02's output; fall back to a small inline prep
 # so this notebook is end-to-end runnable on a fresh Colab clone.
@@ -315,6 +337,7 @@ assert LIGANDS.exists(),  f"missing ligands SDF {LIGANDS}"
 print()
 print(f"Target:                   {TARGET}")
 print(f"Receptor:                 {RECEPTOR.relative_to(REPO_ROOT)}")
+print(f"  ({RECEPTOR_KIND})")
 print(f"Ligand SDF:               {LIGANDS.relative_to(REPO_ROOT)}")
 print(f"Output dir:               {OUT_DIR.relative_to(REPO_ROOT)}")
 print(f"Binding-site center (Å):  {BINDING_SITE_CENTER}")
