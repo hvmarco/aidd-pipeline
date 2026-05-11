@@ -20,6 +20,15 @@ Adapted, in spirit, from the workflow in
 ``_archive/Week_3_Monday_Docking_and_Scoring.ipynb`` (which used PLANTS); the
 binding-site geometry for the ERK2/4FV7 example is taken verbatim from the
 archived PLANTS config ``_archive/configs/plants_4fv7.conf``.
+
+Module API note
+---------------
+The original step-9 brief asked for a ``prepare_receptor(pdb) -> Path`` helper
+that would convert PDB to PDBQT. This was elided after verification: gnina
+(unlike AutoDock Vina) reads PDB receptors directly and does its own atom
+typing internally, so no upfront conversion step is needed. PDBQT prep
+remains relevant for the Vina / AutoDock4 fallback path, which lives in
+a separate module if/when it is needed.
 """
 
 from __future__ import annotations
