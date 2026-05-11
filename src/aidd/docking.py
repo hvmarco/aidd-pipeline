@@ -43,7 +43,7 @@ from typing import Sequence, Union
 
 import pandas as pd
 from rdkit import Chem
-from rdkit.Chem import rdMolAlign
+from rdkit.Chem import AllChem, rdMolAlign
 
 PathLike = Union[str, Path]
 logger = logging.getLogger("aidd.docking")
@@ -386,20 +386,65 @@ def pose_rmsd(
 ) -> float:
     """Heavy-atom symmetry-corrected RMSD between a docked pose and a reference.
 
-    Both files must hold the same chemical structure (matching atoms) — typical
-    for a redock where the input ligand IS the reference. Hydrogens are stripped
-    before RMSD (heavy-atom RMSD is the convention in docking literature).
+    Both files must hold the same chemical structure (matching heavy-atom
+    composition) — typical for a redock where the input ligand IS the
+    reference. Hydrogens are stripped before RMSD (heavy-atom RMSD is the
+    convention in docking literature).
 
-    Uses ``rdMolAlign.CalcRMS``, which solves the substructure-matching problem
-    so that symmetric atoms (e.g. swapped ortho-positions of a phenyl ring) are
-    matched optimally. Coordinates are taken as-is (no rigid-body realignment)
-    because gnina already writes poses in the receptor's coordinate frame.
+    Cross-format robustness: PDB-derived molecules have *heuristic* bond
+    orders that often disagree with the SDF-derived pose's bond orders, even
+    when the underlying chemistry is identical. ``rdMolAlign.CalcRMS``
+    requires substructure matching including bond orders, so the naive call
+    fails with "no sub-structure match" across SDF↔PDB. We work around it in
+    two layers:
+
+    1. **Transfer bond orders.** Use ``AllChem.AssignBondOrdersFromTemplate``
+       to copy the SDF pose's bond orders onto the PDB reference. The
+       reference now matches the pose's connectivity and ``CalcRMS`` works.
+    2. **Element-graph fallback.** If the template assignment fails (e.g.
+       heavy-atom counts differ), normalise both molecules to single bonds
+       + neutral charges (preserving 3-D coordinates) so the substructure
+       match relies purely on the element graph, then call ``CalcRMS``.
+
+    Coordinates are not rigid-body-realigned before the RMSD — gnina already
+    writes poses in the receptor's coordinate frame, which is the same frame
+    the reference ligand is in.
     """
     pose_mol = _read_first_mol(Path(pose_path), index=pose_index)
     ref_mol = _read_first_mol(Path(ref_path), index=0)
     pose_mol = Chem.RemoveHs(pose_mol)
     ref_mol = Chem.RemoveHs(ref_mol)
-    return float(rdMolAlign.CalcRMS(pose_mol, ref_mol))
+
+    try:
+        ref_with_pose_bonds = AllChem.AssignBondOrdersFromTemplate(pose_mol, ref_mol)
+        return float(rdMolAlign.CalcRMS(pose_mol, ref_with_pose_bonds))
+    except (ValueError, RuntimeError):
+        logger.info(
+            "pose_rmsd: AssignBondOrdersFromTemplate failed; falling back to "
+            "element-graph matching."
+        )
+        return float(
+            rdMolAlign.CalcRMS(_element_skeleton(pose_mol), _element_skeleton(ref_mol))
+        )
+
+
+def _element_skeleton(mol: Chem.Mol) -> Chem.Mol:
+    """Return a copy of ``mol`` with all bond orders set to single and charges
+    cleared, so substructure matching depends only on the heavy-atom element
+    graph. 3-D coordinates are preserved untouched.
+    """
+    rw = Chem.RWMol(mol)
+    for bond in rw.GetBonds():
+        bond.SetBondType(Chem.BondType.SINGLE)
+        bond.SetIsAromatic(False)
+    for atom in rw.GetAtoms():
+        atom.SetFormalCharge(0)
+        atom.SetIsAromatic(False)
+        atom.SetNumExplicitHs(0)
+        atom.SetNoImplicit(True)
+    skel = rw.GetMol()
+    skel.UpdatePropertyCache(strict=False)
+    return skel
 
 
 def _read_first_mol(path: Path, *, index: int = 0) -> Chem.Mol:
