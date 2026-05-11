@@ -22,8 +22,12 @@ dependencies:
   - openbabel
   - biopython
 
-  # --- CPU docking baseline (gnina lives in WSL/Colab; this is the always-works fallback) ---
-  - autodock-vina
+  # --- CPU docking baseline ---
+  # AutoDock Vina has no conda-forge package for Windows. Install when needed via:
+  #   - Colab: apt-get install autodock-vina (or use gnina)
+  #   - Windows: download the .exe from https://vina.scripps.edu/ and put it on PATH
+  #   - WSL/Linux/macOS: conda install -c bioconda autodock-vina
+  # Local dev on Windows doesn't need a docker installed — docking notebooks invoke it on Colab.
 
   # --- in-notebook 3D visualisation ---
   - py3dmol
@@ -49,6 +53,7 @@ dependencies:
   - pip:
       - datamol             # RDKit wrapper with sensible defaults
       - meeko               # AutoDock-family ligand prep
+      - gemmi               # structural biology I/O (required by recent meeko)
       - prolif>=2.0         # interaction fingerprints
       - posebusters         # automated pose QC
       - nbstripout          # strip notebook outputs pre-commit
