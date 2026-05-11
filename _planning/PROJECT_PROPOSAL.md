@@ -19,6 +19,7 @@
 | Triage philosophy | locked | **Defensible consensus** — Boltz-2 affinity rank AND gnina+IFP-rescorer rank must both place a compound in top X% (X tunable, default 5%). |
 | Notebook structure | locked | **8 teaching notebooks (00–07) + 1 production runner (99)**, each numbered notebook is one pipeline stage; each is independently runnable from cached intermediate outputs in `data/derived/<target>/<stage>/`. The runner (99) is built last, after 07. |
 | Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 07 (`07_mutation_analysis`)** compares WT vs mutant outputs (structure, IFP, docking shortlist) for drug-resistance / structural-impact studies. See §8. |
+| AF3 fold provider toggle in notebook 99 | locked | Notebook 99 (production runner) gets an **optional `FOLD_PROVIDER` parameter** with values `"colabfold"` (AF2, default — open and reproducible for all users) and `"af3_server"` (AlphaFold Server API — requires per-user academic API key in Colab Secrets, owner-only path). Both branches produce the same canonical `<target>_best.pdb` so downstream cells don't care which folder was used. Single notebook with one toggle, not two parallel notebooks. See §9. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
@@ -208,3 +209,53 @@ The pipeline is **target-agnostic by design**, so mutations are not a special ca
 
 - **Notebook 99 (production runner)** must accept a `mutations` parameter (list of variants to run alongside the WT). Each mutant becomes its own `data/derived/<target>_<mutation>/` directory; notebook 07 is invoked once per mutant to produce the comparison artefacts.
 - **`data/derived/` naming convention** is updated to allow per-variant subdirectories: `data/derived/<target>[_<variant>]/<stage>/`. Wild-type omits the variant suffix.
+
+## 9. Notebook 99 — optional AlphaFold 3 fold provider toggle
+
+### Background
+
+Notebook 01 (`fold_target`) uses **AlphaFold 2 via ColabFold** for structure prediction. AF2 weights are open (CC-BY-4.0), so anyone — student, colleague, reviewer — can run the notebook and reproduce the fold. This is the right default for an open-science pipeline and is **not changing**.
+
+In parallel, the project owner (Natallia, with academic access via her university) may want to use **AlphaFold 3 via the AlphaFold Server API** for her own runs — e.g. for grant materials where citing the newest tool is useful, or for spot-checking specific results against AF3's co-folding head. AF3's weights are **academic non-commercial only, per-user application, no redistribution**, so AF3 cannot be the default for the pipeline. It can however be an opt-in path that the notebook owner enables when they want.
+
+### Design — single notebook, one toggle
+
+`99_screen_library.ipynb` exposes a single parameter near the top:
+
+```python
+FOLD_PROVIDER = "colabfold"   # default: AF2 via ColabFold. Open weights, reproducible by anyone.
+# FOLD_PROVIDER = "af3_server" # personal-use only: AlphaFold Server API. Needs GOOGLE_AF3_API_KEY in Colab Secrets.
+```
+
+The folding cell dispatches on `FOLD_PROVIDER`. Both branches produce the same canonical PDB at `data/derived/<target>/fold/<target>_best.pdb`; downstream cells (docking, scoring, consensus) don't know which folder was used.
+
+**Two parallel notebooks (`99` and `99_af3`) are explicitly rejected** in favour of one notebook with one toggle. Two notebooks would force every other change to be made twice and would drift over time.
+
+### Spec for the agent who builds this
+
+1. **In `src/aidd/folding.py`** — add a new function alongside the existing ColabFold parser:
+   - `fold_with_af3_server(sequence: str, output_dir: PathLike, *, api_key: str, target_name: str = "target") -> Path`
+   - Authenticates against [alphafoldserver.com](https://alphafoldserver.com)'s academic API.
+   - Submits a fold job (sequence-only; protein-only mode), polls for completion, downloads the result.
+   - Writes the canonical `<target_name>_best.pdb` to `output_dir`. Returns the path.
+   - ~50 lines; only new dependency is `requests` (already transitive via existing packages).
+
+2. **In `notebooks/_build_99_screen_library.py`** — the folding cell does:
+   - If `FOLD_PROVIDER == "colabfold"`: existing ColabFold path (delegated to notebook 01's logic via the package).
+   - If `FOLD_PROVIDER == "af3_server"`:
+     - Read `GOOGLE_AF3_API_KEY` from `google.colab.userdata`.
+     - If missing → raise with a clear message ("Set GOOGLE_AF3_API_KEY in Colab Secrets. See https://alphafoldserver.com for academic access.").
+     - Call `fold_with_af3_server(sequence, output_dir, api_key=...)`.
+     - Never print the API key.
+
+3. **One markdown cell** in 99 explaining: the toggle, why the default is open, how the owner sets up the AF3 path (link to AF3 Server academic application, Colab Secrets walk-through), and an explicit caveat that anything pushed to the repo with AF3 results must include the methods citation.
+
+4. **No copies of AF3 weights or output** in `data/derived/` ever get committed. AF3 outputs are personal data; the `.gitignore` on `data/derived/` already prevents this.
+
+### Effort estimate
+
+1–2 days when the work lands, in line with similar feature additions. Most of the work is the API wrapper + secret handling + testing both branches on Colab. No refactor of the existing pipeline.
+
+### When this lands
+
+After notebook 99's first build (which uses only `FOLD_PROVIDER="colabfold"`). The AF3 path is an additive feature, not a prerequisite for shipping 99.
