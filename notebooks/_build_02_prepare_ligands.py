@@ -25,6 +25,8 @@ def build() -> None:
 
 **aidd-pipeline · Notebook 2 of the screening workflow**
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hvmarco/aidd-pipeline/blob/main/notebooks/02_prepare_ligands.ipynb)
+
 Before we can compare candidate molecules against a protein target by docking, we need to clean and standardise them. This notebook takes a library of compounds expressed as **SMILES strings** (a plain-text way of writing molecules), pushes each one through a series of cheminformatics checks, and writes out a file of 3-D molecules ready for the docking step.
 
 The same workflow is used in essentially every modern virtual-screening project, from academic kinase libraries to industrial million-compound screens. We use the open-source [RDKit](https://www.rdkit.org/) and [datamol](https://datamol.io/) libraries; everything is reproducible and free.

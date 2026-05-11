@@ -25,6 +25,8 @@ def build() -> None:
 
 **aidd-pipeline · Notebook 3 of the screening workflow**
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hvmarco/aidd-pipeline/blob/main/notebooks/03_dock_gnina.ipynb)
+
 > **Upstream reference:** This notebook uses [gnina](https://github.com/gnina/gnina), a CNN-rescored fork of [AutoDock Vina](https://vina.scripps.edu/) / smina, developed by the Koes lab (Pitt). It is the "classical interpretable lane" of our pipeline. The complementary "fast lane" (Boltz-2 co-folding + affinity) is covered in notebook `05_dock_boltz`.
 
 So far we have a receptor 3-D model (notebook `01`) and a library of drug-like, 3-D-embedded ligands (notebook `02`). This notebook brings them together: it **docks** each ligand into the receptor's binding site, scores the resulting poses, runs **PoseBusters** to filter out physically implausible poses, and writes a tidy SDF + score table for the rescoring notebook downstream.
@@ -50,10 +52,9 @@ After running this notebook you will be able to:
 
 ## Prerequisites
 
-- Notebook `02_prepare_ligands` has been run — the prepared SDF is at `data/derived/<target>/ligands_prepared.sdf`.
-- A receptor PDB is available — either from notebook `01_fold_target` at `data/derived/<target>/fold/<target>_best.pdb`, or a crystal structure at `data/structures/<target>_<pdbid>.pdb`.
-- The reference (crystal) ligand and its corresponding crystal receptor live under `data/ligands/` and `data/structures/` — used for the redock sanity check (default: `erk2_4fv7_ref.pdb` and `erk2_4fv7.pdb`).
-- A Colab runtime, **or** a Linux / WSL2 box with gnina installed.
+- A Colab runtime, **or** a Linux / WSL2 box with gnina installed (Windows / macOS users go via Colab — see Section 1).
+- The ERK2 crystal receptor (`data/structures/erk2_4fv7.pdb`) and its co-crystallised ligand (`data/ligands/erk2_4fv7_ref.pdb`) — both ship with the repo, so a fresh Colab clone has everything needed.
+- *Optional*: notebook `02_prepare_ligands` already run, with a prepared SDF at `data/derived/<target>/ligands_prepared.sdf`. If absent, this notebook prepares a 10-compound smoke-test subset inline.
 
 ## Runtime
 
@@ -205,8 +206,8 @@ if not gnina_available():
 
 Three things have to be set before we can dock:
 
-1. **The receptor.** A PDB file with the protein you want to dock into. We use the AlphaFold model from notebook `01` (`data/derived/<target>/fold/<target>_best.pdb`) by default — it is what you'd use in a real screen where no crystal structure exists. You can also point at the archived crystal structure for sanity-checking against a known case.
-2. **The ligand library.** The SDF written by notebook `02_prepare_ligands` (drug-like, PAINS-filtered, 3-D-embedded).
+1. **The receptor.** A PDB file with the protein you want to dock into. For the ERK2 demo we use the **4FV7 crystal receptor** (`data/structures/erk2_4fv7.pdb`) by default — it ships with the repo (so a fresh Colab clone can run this notebook with no prerequisites), and the binding-site coordinates below were derived from it. To dock into the AlphaFold model from notebook `01` instead, you would first align it to the crystal coordinate frame so the search box still hits the pocket (a one-line `Bio.PDB.Superimposer` step on the chain Cα atoms). For a real target with no crystal you would use a pocket-detection tool such as fpocket or P2Rank on the AF model to derive the box dynamically. Both are out of scope for this teaching notebook.
+2. **The ligand library.** The SDF written by notebook `02_prepare_ligands` (drug-like, PAINS-filtered, 3-D-embedded). If you have not run notebook 02 yet, the cell below falls back to preparing a small subset inline so this notebook is still runnable end-to-end as a smoke test.
 3. **The search box.** A cuboid in 3-D space the docker will sample inside. For a well-studied target like ERK2 we know the binding-site coordinates (they live in the archived PLANTS config). For a new target you would derive them from a co-crystallised ligand if you have one, or from a pocket-detection tool like fpocket or P2Rank.
 
 ### About the ERK2 binding-site coordinates
@@ -226,21 +227,41 @@ Docking 100 prepared ligands at exhaustiveness 8 takes ~20–30 min on a Colab C
         code(title="Inputs: target, receptor, ligand SDF, binding-site geometry", source="""
 TARGET = "erk2"
 
-# Default: dock into the AlphaFold model from notebook 01. To dock into a crystal
-# structure for direct sanity-check against a known case, point RECEPTOR at
-# data/structures/erk2_4fv7.pdb instead.
-RECEPTOR = REPO_ROOT / "data" / "derived" / TARGET / "fold" / f"{TARGET}_best.pdb"
-LIGANDS  = REPO_ROOT / "data" / "derived" / TARGET / "ligands_prepared.sdf"
+# Receptor for the library dock. We default to the 4FV7 crystal because:
+#   (a) it ships with the repo, so a fresh Colab clone can run this notebook;
+#   (b) the binding-site coordinates below are in its coordinate frame.
+# To dock into the AlphaFold model from notebook 01, first align it to the
+# crystal frame, then set RECEPTOR to the aligned PDB.
+RECEPTOR = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
+
+# Reference receptor + ligand for the redock sanity check (same crystal).
+CRYSTAL_RECEPTOR = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
+CRYSTAL_LIGAND   = REPO_ROOT / "data" / "ligands" / "erk2_4fv7_ref.pdb"
 
 # Where docking outputs land.
 OUT_DIR = REPO_ROOT / "data" / "derived" / TARGET / "docking"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Reference receptor + ligand for the redock sanity check (4FV7 crystal).
-CRYSTAL_RECEPTOR = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
-CRYSTAL_LIGAND   = REPO_ROOT / "data" / "ligands" / "erk2_4fv7_ref.pdb"
+# Ligand SDF: prefer notebook 02's output; fall back to a small inline prep
+# so this notebook is end-to-end runnable on a fresh Colab clone.
+LIGANDS = REPO_ROOT / "data" / "derived" / TARGET / "ligands_prepared.sdf"
+if not LIGANDS.exists():
+    print(f"⚠ {LIGANDS.relative_to(REPO_ROOT)} not found — preparing a 10-compound")
+    print("  fallback inline. For real screens, run notebook 02 first.")
+    from aidd.ligands import read_smiles, prepare_library, write_sdf
+    smi_path = REPO_ROOT / "data" / "compounds" / TARGET / "training_small.smi"
+    df_smi = read_smiles(smi_path).head(10)
+    df_prepped = prepare_library(df_smi, n_workers=1, progress=False)
+    LIGANDS = REPO_ROOT / "data" / "derived" / TARGET / "ligands_smoketest.sdf"
+    LIGANDS.parent.mkdir(parents=True, exist_ok=True)
+    write_sdf(
+        df_prepped[df_prepped["ok"]],
+        LIGANDS,
+        props_to_write=["smiles_std", "mw", "logp", "qed"],
+    )
+    print(f"  wrote {sum(df_prepped['ok'])} prepared ligands → {LIGANDS.relative_to(REPO_ROOT)}")
 
-# Binding-site geometry — from _archive/configs/plants_4fv7.conf.
+# Binding-site geometry — from _archive/configs/plants_4fv7.conf (4FV7 frame).
 BINDING_SITE_CENTER = (1.34299, 17.3648, 40.9828)
 BINDING_SITE_RADIUS = 12.9007
 BOX = box_from_center_radius(BINDING_SITE_CENTER, BINDING_SITE_RADIUS, margin=2.0)
@@ -252,8 +273,9 @@ NUM_MODES = 9
 
 # Sanity-check the inputs.
 assert RECEPTOR.exists(), f"missing receptor {RECEPTOR}"
-assert LIGANDS.exists(),  f"missing ligands SDF {LIGANDS} (run notebook 02 first)"
+assert LIGANDS.exists(),  f"missing ligands SDF {LIGANDS}"
 
+print()
 print(f"Target:                   {TARGET}")
 print(f"Receptor:                 {RECEPTOR.relative_to(REPO_ROOT)}")
 print(f"Ligand SDF:               {LIGANDS.relative_to(REPO_ROOT)}")

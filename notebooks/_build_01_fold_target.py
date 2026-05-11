@@ -28,6 +28,8 @@ def build() -> None:
 
 **aidd-pipeline · Notebook 1 of the screening workflow**
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hvmarco/aidd-pipeline/blob/main/notebooks/01_fold_target.ipynb)
+
 > **Upstream reference:** This notebook is an adapted, pinned version of [`ColabFold/AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb) (a.k.a. the official ColabFold AlphaFold2 notebook). For the canonical, always-current ColabFold notebook open the link directly: [Open in Colab ↗](https://colab.research.google.com/github/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb). Our version differs in three ways: (1) the install is pinned to a specific ColabFold commit for reproducibility, (2) we wrap the call to `colabfold_batch` in a thinner orchestration so the output is picked up by the rest of *this* pipeline, (3) the markdown is rewritten for our pedagogical conventions.
 
 When you do not have an experimental 3-D structure of your target — and even when you do, but it lacks a part of the sequence, contains a mutation you care about, or is a homolog rather than your actual construct — you predict the structure from the amino-acid sequence. The state of the art for that since 2021 is **AlphaFold2 (AF2)**, run via the community wrapper **ColabFold**.

@@ -25,6 +25,8 @@ def build() -> None:
 
 **aidd-pipeline · Notebook 0 of the screening workflow**
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/hvmarco/aidd-pipeline/blob/main/notebooks/00_quickstart.ipynb)
+
 This is the simplest end-to-end demonstration in the pipeline. We take a known protein–ligand complex from the Protein Data Bank — the kinase **ERK2** bound to its co-crystallised small-molecule inhibitor — and we ask two questions:
 
 1. *Where on the protein does the ligand sit, and which residues does it touch?*
