@@ -1,0 +1,606 @@
+"""Builder for 03_dock_gnina.ipynb.
+
+Source of truth for the gnina docking notebook. Cells appear below in
+narrative order. Never edit the .ipynb directly — see ``CLAUDE.md`` §
+*Notebook workflow*.
+
+Regenerate:
+    python notebooks/_build_03_dock_gnina.py
+"""
+
+from pathlib import Path
+import sys
+
+HERE = Path(__file__).parent
+sys.path.insert(0, str(HERE))
+from _nb_helpers import AUTORELOAD_SNIPPET, code, markdown, notebook, save  # noqa: E402
+
+NOTEBOOK_PATH = HERE / "03_dock_gnina.ipynb"
+
+
+def build() -> None:
+    nb = notebook(
+        markdown("""
+# 03 — Dock a ligand library into the receptor with gnina
+
+**aidd-pipeline · Notebook 3 of the screening workflow**
+
+> **Upstream reference:** This notebook uses [gnina](https://github.com/gnina/gnina), a CNN-rescored fork of [AutoDock Vina](https://vina.scripps.edu/) / smina, developed by the Koes lab (Pitt). It is the "classical interpretable lane" of our pipeline. The complementary "fast lane" (Boltz-2 co-folding + affinity) is covered in notebook `05_dock_boltz`.
+
+So far we have a receptor 3-D model (notebook `01`) and a library of drug-like, 3-D-embedded ligands (notebook `02`). This notebook brings them together: it **docks** each ligand into the receptor's binding site, scores the resulting poses, runs **PoseBusters** to filter out physically implausible poses, and writes a tidy SDF + score table for the rescoring notebook downstream.
+
+> ⚠️ **gnina is Linux-native.** It runs on Colab out of the box (the setup cell downloads the binary), under WSL2 on Windows, or in a Linux container on macOS. **Local Windows and native macOS are unsupported by the docker itself** — run this notebook on Colab if you are on either of those.
+
+## Learning objectives
+
+After running this notebook you will be able to:
+
+- Explain in plain language what **docking** is, and what its outputs (poses + scores) mean.
+- Specify a **binding site** (center + box) and reason about its size relative to the protein.
+- Run **gnina** from a Python cell, parse its SDF output, and read its score columns (`minimizedAffinity`, `CNNscore`, `CNNaffinity`).
+- Perform a **redock** sanity check: redock a crystallographic ligand and verify the predicted pose is within 2 Å RMSD of the experimental one.
+- Run **PoseBusters** on a docking output to flag physically implausible poses (clashes, broken bonds, bad ring geometry).
+- Visualise the top hits in 3-D to spot good vs suspect poses by eye.
+
+## Audience
+
+- A clinician / biologist who wants to see how *in-silico* screening prioritises a library before wet-lab follow-up.
+- A data / ML person who has never run docking but is comfortable with scientific Python.
+- A student writing a thesis chapter on structure-based virtual screening.
+
+## Prerequisites
+
+- Notebook `02_prepare_ligands` has been run — the prepared SDF is at `data/derived/<target>/ligands_prepared.sdf`.
+- A receptor PDB is available — either from notebook `01_fold_target` at `data/derived/<target>/fold/<target>_best.pdb`, or a crystal structure at `data/structures/<target>_<pdbid>.pdb`.
+- The reference (crystal) ligand and its corresponding crystal receptor live under `data/ligands/` and `data/structures/` — used for the redock sanity check (default: `erk2_4fv7_ref.pdb` and `erk2_4fv7.pdb`).
+- A Colab runtime, **or** a Linux / WSL2 box with gnina installed.
+
+## Runtime
+
+- **Setup + gnina install (Colab):** ~1 min, one-time per Colab runtime.
+- **Redock sanity check:** ~30 s on Colab CPU.
+- **Library dock (100 compounds, exhaustiveness 8):** ~20–30 min on a 4-core Colab CPU. Scales roughly linearly with library size and with `--exhaustiveness`.
+- **PoseBusters QC:** ~1–2 min on 100 compounds × 9 poses each.
+
+Set `SAMPLE_N` in Section 2 to a small number (10–25) for a quick first run; bump it up once everything is wired.
+"""),
+
+        markdown("""
+## Key terms used in this notebook
+
+| Term | Meaning in one line |
+|---|---|
+| **Docking** | Predicting how a ligand sits inside a protein pocket. Output = one or more **poses** with **scores**. |
+| **Pose** | A specific 3-D placement of the ligand inside the pocket. Docking returns several per compound (typically 9). |
+| **Scoring function** | The formula that ranks poses. Classical: empirical / force-field-based (Vina, ChemPLP). Modern: CNN-rescored (gnina). |
+| **Affinity** | Predicted binding free energy. Vina/smina convention: in **kcal/mol**, more *negative* = stronger binding. CNN affinity: in **pK_d** (log₁₀ of K_d), higher = stronger. |
+| **gnina** | A docker that uses Vina-style sampling and a **CNN** trained on the PDBbind dataset to rescore poses. Open-source, GPU-optional. |
+| **AutoDock Vina** | The classical docker gnina is built on. Empirical scoring function from 2010. |
+| **Binding site / search box** | The cuboid in 3-D space inside which gnina samples poses. Smaller box → faster, more targeted; too small → misses real poses. |
+| **Exhaustiveness** | Gnina's sampling-thoroughness knob. 8 is the default; 16 doubles search time for a small accuracy gain. |
+| **Redock** | Take a known crystallographic ligand, dock it back into its receptor, and measure how close the predicted pose is to the experimental one. The standard methodological sanity check. |
+| **RMSD** | *Root-Mean-Square Deviation* of heavy-atom positions, in Å. **< 2 Å** between predicted and experimental pose = successful redock. |
+| **PoseBusters** | A pose-quality-control tool. Runs ~20 geometric / chemical checks per pose and flags ones that are physically implausible. |
+| **CNN score / CNN affinity** | Outputs of gnina's pose-scoring neural network. Higher = better-looking pose / stronger predicted binding. |
+| **SDF** | *Structure-Data File* — the text format gnina writes its poses + scores to. The same format we wrote the prepared library in (notebook `02`). |
+"""),
+
+        markdown("""
+## Why docking matters — the biological reasoning
+
+Wet-lab assays are expensive: every compound that gets ordered, tested, and dose-curved costs time, reagents, and freezer space. Docking is the cheapest filter in the medicinal-chemistry triage chain. It will not tell you whether a compound *is* a drug, but it will reliably remove the compounds whose 3-D shape cannot fit into the pocket at all — typically half the library on a kinase target.
+
+The clinical analogue is informative. A binding assay measures whether a candidate compound interacts physically with the target protein in vitro. Docking is the *in-silico* version of that assay: same question (does this molecule fit?), much lower cost (CPU minutes rather than a 384-well plate), much weaker confidence in the answer (the scoring function is a rough approximation, and the protein is held rigid in standard docking). Two principles follow from this trade-off:
+
+1. **Docking is a first-pass triage**, not a final ranking. We use it to push the bottom of the list off the bench, not to pick the winner.
+2. **A single docker is rarely enough.** The downstream notebooks add an interaction-fingerprint rescorer (notebook `04`) trained on real activity data, and a second co-folding affinity predictor (notebook `05`, Boltz-2). The final shortlist (notebook `06`) requires *agreement* between these orthogonal signals.
+
+What docking does **not** capture:
+
+- **Protein flexibility.** Standard docking treats the receptor as rigid. Real binding often induces side-chain rotation or loop reorganisation.
+- **Solvent and entropy.** The scoring function is a coarse free-energy estimate; entropy of the bulk water network is not modelled atomistically.
+- **Covalent binding.** Most dockers assume non-covalent interactions only; covalent inhibitors need a specialised mode (gnina supports it; we do not turn it on here).
+- **Allosteric sites.** We dock into one specified pocket. Compounds that bind elsewhere on the protein will score badly here, but might still be real binders.
+
+These limitations are why we run docking *as one input among several*, not as a final verdict.
+"""),
+
+        markdown("""
+## 1. Setup
+
+### What this section does
+
+Detect Colab vs local, clone the repo on Colab, install **gnina** (Linux-native — Colab downloads its static binary; local Linux / WSL2 should already have it; Windows / macOS surfaces a clear instruction to switch to Colab).
+
+### About the gnina install (read once, then forget)
+
+gnina ships as a self-contained Linux binary in [GitHub Releases](https://github.com/gnina/gnina/releases). On Colab we download a pinned version directly to `/usr/local/bin/gnina`. Updates: bump `GNINA_VERSION` below, re-run on a fresh runtime, commit on success.
+
+On Windows / macOS, the binary will not run. The local Python in those environments is still useful for the parsing / visualisation cells — but the dock itself must happen on Colab (or under WSL2).
+"""),
+
+        code(title="Setup: detect Colab vs local, install gnina, clone repo", source="""
+import sys
+import importlib
+import shutil
+import subprocess
+from pathlib import Path
+
+IS_COLAB = "google.colab" in sys.modules
+
+# gnina pin — update via the procedure described in the markdown above.
+GNINA_VERSION = "v1.3"
+LAST_VERIFIED = "2026-05-11"
+
+if IS_COLAB:
+    # 1. Repo. Must be public for unauthenticated clone from Colab.
+    REPO_ROOT = Path("/content/aidd-pipeline")
+    if not REPO_ROOT.exists():
+        !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
+    if not (REPO_ROOT / "src" / "aidd").exists():
+        raise RuntimeError(
+            "Repo clone failed (likely cause: the repo is private and Colab cannot "
+            "authenticate). Make github.com/hvmarco/aidd-pipeline public, or use a "
+            "Personal Access Token via Colab Secrets, then re-run this cell."
+        )
+
+    # 2. gnina static binary (Linux-only release).
+    if not shutil.which("gnina"):
+        print(f"Downloading gnina {GNINA_VERSION} (verified {LAST_VERIFIED})…")
+        url = f"https://github.com/gnina/gnina/releases/download/{GNINA_VERSION}/gnina"
+        !wget -q -O /usr/local/bin/gnina {url}
+        !chmod +x /usr/local/bin/gnina
+
+    # 3. PoseBusters (pip; not in Colab's default image).
+    !pip install -q posebusters rdkit datamol "prolif>=2.0" py3Dmol biopython
+
+    # 4. Imports.
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    importlib.invalidate_caches()
+else:
+    REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    importlib.invalidate_caches()
+
+print(f"Repo root: {REPO_ROOT}")
+print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
+"""),
+
+        code(title="Imports + environment check", source=AUTORELOAD_SNIPPET + """
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import py3Dmol
+from rdkit import Chem
+
+from aidd.docking import (
+    BindingBox, box_from_center_radius,
+    describe_environment, gnina_available, require_gnina,
+    dock_library, redock_reference,
+    parse_poses_sdf, pose_rmsd, run_posebusters,
+)
+
+sns.set_theme(style="whitegrid")
+
+env = describe_environment()
+print(f"Platform:      {env['platform']}")
+print(f"gnina path:    {env['gnina_path']}")
+print(f"gnina version: {env['gnina_version']}")
+
+if not gnina_available():
+    print()
+    print("gnina is not on PATH. The parsing / visualisation cells below will still")
+    print("work if you provide a poses.sdf from a previous Colab run, but the dock")
+    print("itself cannot run on this machine. Open this notebook in Colab to run it.")
+"""),
+
+        markdown("""
+## 2. Inputs — receptor, ligand library, binding site
+
+### Background
+
+Three things have to be set before we can dock:
+
+1. **The receptor.** A PDB file with the protein you want to dock into. We use the AlphaFold model from notebook `01` (`data/derived/<target>/fold/<target>_best.pdb`) by default — it is what you'd use in a real screen where no crystal structure exists. You can also point at the archived crystal structure for sanity-checking against a known case.
+2. **The ligand library.** The SDF written by notebook `02_prepare_ligands` (drug-like, PAINS-filtered, 3-D-embedded).
+3. **The search box.** A cuboid in 3-D space the docker will sample inside. For a well-studied target like ERK2 we know the binding-site coordinates (they live in the archived PLANTS config). For a new target you would derive them from a co-crystallised ligand if you have one, or from a pocket-detection tool like fpocket or P2Rank.
+
+### About the ERK2 binding-site coordinates
+
+For the ERK2 / 4FV7 example, the binding-site center and radius are taken directly from `_archive/configs/plants_4fv7.conf`:
+
+- **center** = (1.343, 17.365, 40.983) Å — the geometric centre of the ATP pocket.
+- **radius** = 12.9 Å — covers the ATP pocket plus a small margin around it.
+
+gnina takes a *box* rather than a *sphere*; we convert by setting each box edge to `2 * radius + 2 * margin` Å. With `margin = 2 Å` the cube edge is about 30 Å — generous enough that the ligand can swing around inside the pocket without being clipped by the search box.
+
+### About `SAMPLE_N` and runtime
+
+Docking 100 prepared ligands at exhaustiveness 8 takes ~20–30 min on a Colab CPU. Set `SAMPLE_N = 10` for a quick first run while you wire everything up; bump it once the redock sanity check passes and you see the first few poses look reasonable.
+"""),
+
+        code(title="Inputs: target, receptor, ligand SDF, binding-site geometry", source="""
+TARGET = "erk2"
+
+# Default: dock into the AlphaFold model from notebook 01. To dock into a crystal
+# structure for direct sanity-check against a known case, point RECEPTOR at
+# data/structures/erk2_4fv7.pdb instead.
+RECEPTOR = REPO_ROOT / "data" / "derived" / TARGET / "fold" / f"{TARGET}_best.pdb"
+LIGANDS  = REPO_ROOT / "data" / "derived" / TARGET / "ligands_prepared.sdf"
+
+# Where docking outputs land.
+OUT_DIR = REPO_ROOT / "data" / "derived" / TARGET / "docking"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Reference receptor + ligand for the redock sanity check (4FV7 crystal).
+CRYSTAL_RECEPTOR = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
+CRYSTAL_LIGAND   = REPO_ROOT / "data" / "ligands" / "erk2_4fv7_ref.pdb"
+
+# Binding-site geometry — from _archive/configs/plants_4fv7.conf.
+BINDING_SITE_CENTER = (1.34299, 17.3648, 40.9828)
+BINDING_SITE_RADIUS = 12.9007
+BOX = box_from_center_radius(BINDING_SITE_CENTER, BINDING_SITE_RADIUS, margin=2.0)
+
+# Library size for this run (None = all). Start small while wiring up.
+SAMPLE_N = 25
+EXHAUSTIVENESS = 8
+NUM_MODES = 9
+
+# Sanity-check the inputs.
+assert RECEPTOR.exists(), f"missing receptor {RECEPTOR}"
+assert LIGANDS.exists(),  f"missing ligands SDF {LIGANDS} (run notebook 02 first)"
+
+print(f"Target:                   {TARGET}")
+print(f"Receptor:                 {RECEPTOR.relative_to(REPO_ROOT)}")
+print(f"Ligand SDF:               {LIGANDS.relative_to(REPO_ROOT)}")
+print(f"Output dir:               {OUT_DIR.relative_to(REPO_ROOT)}")
+print(f"Binding-site center (Å):  {BINDING_SITE_CENTER}")
+print(f"Binding-site radius (Å):  {BINDING_SITE_RADIUS}")
+print(f"Search box size (Å):      {BOX.size[0]:.2f} per edge")
+print(f"Library sample:           {SAMPLE_N or 'all'} compounds")
+print(f"Exhaustiveness:           {EXHAUSTIVENESS}  (poses per compound: {NUM_MODES})")
+"""),
+
+        markdown("""
+## 3. Redock the reference ligand (methodological sanity check)
+
+### Background
+
+Before we trust docking on unknown ligands, we re-dock a *known* one. The crystallographic ligand E94 from the 4FV7 structure has an experimentally measured pose; if our gnina setup is sound, it should re-discover that pose to within ~2 Å heavy-atom RMSD. This is the standard "does the docker work for this target?" test, and it costs only ~30 s of CPU.
+
+We use the **crystal receptor** (`erk2_4fv7.pdb`), not the AlphaFold model, for this check — the experimental pose was measured on the crystal, so comparing against it on a predicted structure mixes two unknowns. The library-docking step below uses the AlphaFold model as you would in a real screen.
+
+`autobox_ligand` tells gnina to derive the search box from the reference ligand's own coordinates (plus a 4 Å margin), so we are not biasing the redock with our hand-chosen `BINDING_SITE_*` numbers. Higher exhaustiveness (16 vs 8) gives the docker more sampling rounds and tightens the confidence interval on the answer.
+"""),
+
+        code(title="Redock the reference ligand against the crystal receptor", source="""
+redock = redock_reference(
+    receptor=CRYSTAL_RECEPTOR,
+    ref_ligand=CRYSTAL_LIGAND,
+    out_dir=OUT_DIR / "redock",
+    autobox_ligand=CRYSTAL_LIGAND,
+    autobox_add=4.0,
+    exhaustiveness=16,
+    num_modes=9,
+    seed=42,
+)
+print(f"Redock RMSD vs crystal:  {redock['rmsd_to_crystal']:.2f} Å   (target: < 2.0)")
+print(f"Top-pose CNN score:      {redock['cnn_score']:.3f}")
+print(f"Top-pose CNN affinity:   {redock['cnn_affinity']:.2f}  (pK_d)")
+print(f"Top-pose Vina affinity:  {redock['affinity']:.2f} kcal/mol")
+print(f"Poses file:              {redock['poses_sdf']}")
+"""),
+
+        markdown("""
+### How to read the redock result
+
+- **RMSD < 2 Å** → the docking workflow works on this target. Proceed.
+- **2–4 Å** → the docker found a sub-pocket of the binding site but not the exact pose. Still acceptable for ranking; not great for pose-level claims.
+- **> 4 Å** → the docker is not finding the correct binding mode. Common causes: the search box is in the wrong place, the receptor has a side-chain in a clashing rotamer, or the reference ligand is bulky enough that the rigid-receptor assumption breaks. Inspect by eye (next cell) before trusting library-scale results.
+
+Be aware: 2 Å is a *workflow-validation* threshold, not a measure of pose accuracy on new ligands. New compounds may dock less accurately if their chemistry differs substantially from the reference.
+"""),
+
+        code(title="3-D viewer: crystal pose (green) vs gnina-predicted pose (cyan)", source="""
+view = py3Dmol.view(width=600, height=500)
+view.removeAllModels()
+view.addModel(CRYSTAL_RECEPTOR.read_text(), "pdb")
+view.setStyle({"cartoon": {"color": "gold", "opacity": 0.6}})
+
+# Crystal pose (experimental ground truth)
+view.addModel(CRYSTAL_LIGAND.read_text(), "pdb")
+view.setStyle({"model": 1}, {"stick": {"colorscheme": "greenCarbon"}})
+
+# gnina top-1 redocked pose
+redock_poses = Path(redock["poses_sdf"])
+view.addModel(redock_poses.read_text(), "sdf")
+view.setStyle({"model": 2}, {"stick": {"colorscheme": "cyanCarbon"}})
+
+view.zoomTo({"model": 1})
+view.show()
+"""),
+
+        markdown("""
+### Reading the overlay
+
+Green sticks = experimental crystallographic pose. Cyan sticks = gnina's top-ranked prediction. If the workflow is sound, the two will overlap almost atom-for-atom; if not, the cyan pose will sit nearby (same pocket, wrong orientation) or in a completely different place.
+
+The most common failure mode is **flipping**: the docker places the same atoms but rotates the ligand 180° within the pocket. This counts as a redock failure even though most of the contacts are still present. Inspect the orientation of any uniquely-identifiable atom (a chlorine, a sulfonyl group) to check.
+"""),
+
+        markdown("""
+## 4. Dock the prepared library
+
+### Background
+
+Now the production step: each ligand in `LIGANDS` is docked into the binding site, and gnina returns up to `NUM_MODES` poses per compound. The default scoring mode is `--cnn_scoring rescore` — Vina does the conformational search (fast), gnina's CNN rescores the final pose (more accurate than the empirical Vina function on its own). Higher accuracy modes (`refinement`, `all`) are slower and pay off most on hard cases; for a first-pass triage `rescore` is the right choice.
+
+This cell is **idempotent**: it writes `poses.sdf` and `gnina_scores.csv` under `OUT_DIR` and skips on re-run if both exist. To force a redock, pass `overwrite=True` or delete the cache. Re-running this cell after editing only the analysis code does *not* re-run gnina.
+
+### Why we sample a subset by default
+
+Docking 25 compounds takes ~5 min on a Colab CPU; 100 takes ~20–30 min. For the first pass — verifying the receptor + box are right and the output looks reasonable — keep `SAMPLE_N` small. Bump it up once you trust the setup. The cell below will warn if the full library is much larger than the sample.
+"""),
+
+        code(title="Dock the library (the long step — ~5 min per 25 compounds at exh=8)", source="""
+ligands_to_dock = LIGANDS
+if SAMPLE_N is not None:
+    # Make a temporary subset SDF so gnina only sees the first SAMPLE_N compounds.
+    subset_sdf = OUT_DIR / f"ligands_subset_n{SAMPLE_N}.sdf"
+    sup = Chem.SDMolSupplier(str(LIGANDS), removeHs=False)
+    writer = Chem.SDWriter(str(subset_sdf))
+    n = 0
+    for mol in sup:
+        if mol is None:
+            continue
+        writer.write(mol)
+        n += 1
+        if n >= SAMPLE_N:
+            break
+    writer.close()
+    print(f"Subset SDF: {subset_sdf.relative_to(REPO_ROOT)}  ({n} compounds)")
+    ligands_to_dock = subset_sdf
+
+scores = dock_library(
+    receptor=RECEPTOR,
+    ligands_sdf=ligands_to_dock,
+    out_dir=OUT_DIR,
+    box=BOX,
+    exhaustiveness=EXHAUSTIVENESS,
+    num_modes=NUM_MODES,
+    cnn_scoring="rescore",
+    seed=42,
+)
+print(f"Docked {scores['compound_id'].nunique():,} compounds → {len(scores):,} poses")
+scores.head(10)
+"""),
+
+        markdown("""
+### How to read the score table
+
+One row per pose; multiple poses per compound. The score columns:
+
+- **`affinity`** — Vina/smina-style binding free energy in kcal/mol. **More negative = stronger predicted binding.** Typical values for a kinase inhibitor: −6 to −12 kcal/mol. Anything above (less negative than) −5 is weak.
+- **`cnn_score`** — gnina's CNN classification score for "this looks like a real binding pose", in 0–1. **Higher = better.** Trained on PDBbind positive / decoy pairs.
+- **`cnn_affinity`** — CNN-predicted binding affinity in **pK_d** (i.e. `−log10(K_d)`). **Higher = stronger.** Typical drugs: 6–10. Sub-micromolar binders score ≥ 6.
+- **`cnn_vs`** — combined virtual-screening score (`cnn_score × cnn_affinity`); good for ranking across compounds.
+- **`minimized_rmsd`** — how much gnina moved the pose during its minimisation step. Large values (>2 Å) suggest the initial pose was strained.
+- **`pose_rank`** — 1 = gnina's top pick for that compound. Subsequent ranks are alternative binding modes the docker considered, ordered by score.
+
+A common starting view is to keep only the top-1 pose per compound:
+
+```python
+top1 = scores[scores["pose_rank"] == 1].sort_values("cnn_affinity", ascending=False)
+```
+
+Notebook `04_score_classical` will rescore these with an interaction-fingerprint + machine-learning model trained on real activity data; the gnina scores here are a useful baseline, not the final word.
+"""),
+
+        code(title="Top-1-pose-per-compound view, sorted by CNN affinity", source="""
+top1 = (
+    scores[scores["pose_rank"] == 1]
+    .sort_values("cnn_affinity", ascending=False)
+    .reset_index(drop=True)
+)
+print(f"{len(top1):,} compounds in top-1-pose view")
+top1.head(15)
+"""),
+
+        code(title="Affinity distributions — quick visual sanity check", source="""
+fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
+sns.histplot(top1["affinity"], ax=axes[0], bins=20, color="steelblue")
+axes[0].set_xlabel("Vina affinity (kcal/mol)  — lower is better")
+sns.histplot(top1["cnn_score"], ax=axes[1], bins=20, color="seagreen")
+axes[1].set_xlabel("CNN score (0–1)  — higher is better")
+sns.histplot(top1["cnn_affinity"], ax=axes[2], bins=20, color="darkorange")
+axes[2].set_xlabel("CNN affinity (pK_d)  — higher is better")
+fig.suptitle("Distribution of top-1-pose scores across the docked library")
+fig.tight_layout()
+plt.show()
+"""),
+
+        markdown("""
+### What the distributions tell you
+
+A well-behaved screen against a kinase should show:
+
+- **Vina affinity** centred around −7 to −9 kcal/mol, with a tail towards −10 to −12 for the strongest hits.
+- **CNN score** distributed across the full 0–1 range (it is trained as a classifier; most poses get a moderate score, the best get > 0.8).
+- **CNN affinity** centred around 5–7 pK_d for a generic screening library, with the strongest hits ≥ 8.
+
+Watch out for:
+
+- A *single peak* at −5 kcal/mol or shallower → the docker is failing to find the pocket (the search box may be wrong or off-center).
+- A *bimodal* distribution → the library has two distinct chemotypes, one of which fits and one of which does not. Common with vendor catalogues. Filter further before downstream rescoring.
+- CNN scores all stuck near 0 → the receptor protonation / preparation may be off; the CNN was trained on protonated PDBbind receptors.
+"""),
+
+        markdown("""
+## 5. PoseBusters QC — flag physically implausible poses
+
+### Background
+
+Docking scoring functions tolerate cheating. A pose with a broken bond, an inside-out ring, or an atom inside a protein residue can still score well — the scoring function doesn't bake in every chemistry rule. **PoseBusters** runs about 20 explicit geometric and chemical checks on every pose and reports a per-check pass/fail:
+
+- **Bond geometry** — bond lengths and angles match canonical ranges.
+- **Stereochemistry** — chiral centres preserved relative to the input.
+- **Ring planarity / aromaticity** — aromatic rings remain flat, no inverted chair conformations.
+- **Internal clashes** — no overlapping atoms within the ligand.
+- **Protein–ligand clashes** — the ligand does not overlap with any protein heavy atom (when `mol_cond` is provided).
+- **Bound geometry** — pose makes sense given the binding site (volume overlap, no atoms outside the box, etc.).
+
+A pose that fails PoseBusters is, almost always, not a real binding mode no matter what gnina's CNN said. In a screening shortlist you want only PoseBusters-clean poses.
+"""),
+
+        code(title="Run PoseBusters on every pose", source="""
+poses_sdf = OUT_DIR / "poses.sdf"
+pb_df = run_posebusters(poses_sdf, receptor=RECEPTOR, mode="dock")
+
+print(f"PoseBusters ran on {len(pb_df):,} poses; columns = checks + pb_passes_all + first_failing")
+print(f"Pass rate (all checks):  {pb_df['pb_passes_all'].mean():.1%}")
+
+# Per-check pass rate
+bool_cols = [c for c in pb_df.columns if pb_df[c].dtype == bool and c != "pb_passes_all"]
+per_check = pb_df[bool_cols].mean().sort_values()
+print()
+print("Lowest pass-rate checks (most common failures):")
+print(per_check.head(10).map("{:.1%}".format).to_string())
+"""),
+
+        markdown("""
+### Reading the pass-rate table
+
+A healthy screening run looks like:
+
+- **Overall pass rate ≥ 80%** — most poses survive QC. Below 50% usually means the receptor was prepared badly (missing atoms, wrong protonation, or steric clashes baked into the model).
+- **`bond_lengths` / `bond_angles`** — should be > 99% pass. Failures here suggest a corrupt SDF input.
+- **`mol_pred_loaded` / `sanitization`** — should be 100%. Failures indicate gnina wrote a molecule RDKit cannot re-read.
+- **`internal_steric_clash` / `protein-ligand_steric_clashes`** — often the lowest pass rates. A few % clash is acceptable; > 30% means the search box is positioned wrong (the docker is forcing the ligand into a steric wall) or the receptor needs cleaning.
+
+Compounds with all top-`NUM_MODES` poses failing should be dropped before downstream rescoring.
+"""),
+
+        code(title="Merge PoseBusters flags into the gnina score table", source="""
+# PoseBusters' index is (file, mol_idx). We align on the order gnina wrote.
+scores_qc = scores.reset_index(drop=True).copy()
+pb_aligned = pb_df.reset_index(drop=True)
+
+# Bring in the headline columns.
+for col in ("pb_passes_all", "first_failing"):
+    if col in pb_aligned.columns:
+        scores_qc[col] = pb_aligned[col].values[: len(scores_qc)]
+
+# Top-1, PoseBusters-clean.
+top1_qc = (
+    scores_qc[(scores_qc["pose_rank"] == 1) & (scores_qc.get("pb_passes_all", True))]
+    .sort_values("cnn_affinity", ascending=False)
+    .reset_index(drop=True)
+)
+print(f"{len(top1_qc):,} compounds have a PoseBusters-clean top-1 pose.")
+top1_qc.head(15)
+"""),
+
+        markdown("""
+## 6. Visualise the top hits
+
+### Background
+
+Before handing a shortlist over to medicinal chemistry, look at the top poses by eye. The features to check on each compound:
+
+- The ligand sits *inside* the binding pocket (not floating in solvent, not poking out of the back).
+- Recognisable interactions are present — for a kinase, the hinge backbone hydrogen bond is the classic.
+- No obvious clashes (atoms inside protein residues, distorted rings).
+- The ligand shape *fits* — flat aromatic rings stacking against flat protein surfaces, polar groups facing polar residues.
+
+A surprising number of "good"-scoring poses look pathological under visual inspection. This is the cheapest sanity check there is.
+"""),
+
+        code(title="3-D viewer: receptor + top-N CNN-affinity hits overlaid", source="""
+TOP_N = 5
+
+# Reload poses.sdf, group by compound, keep the rank-1 pose for the top-N compounds.
+sup = Chem.SDMolSupplier(str(poses_sdf), removeHs=False)
+all_poses = [m for m in sup if m is not None]
+
+top_ids = top1_qc.head(TOP_N)["compound_id"].tolist()
+top_poses = []
+seen = set()
+for mol in all_poses:
+    name = mol.GetProp("_Name") if mol.HasProp("_Name") else ""
+    if name in top_ids and name not in seen:
+        top_poses.append(mol)
+        seen.add(name)
+
+print(f"Showing {len(top_poses)} top compounds: {top_ids}")
+
+view = py3Dmol.view(width=650, height=520)
+view.removeAllModels()
+view.addModel(RECEPTOR.read_text(), "pdb")
+view.setStyle({"cartoon": {"color": "gold", "opacity": 0.55}})
+
+palette = ["cyanCarbon", "magentaCarbon", "yellowCarbon", "greenCarbon", "orangeCarbon"]
+for i, mol in enumerate(top_poses):
+    view.addModel(Chem.MolToMolBlock(mol), "mol")
+    view.setStyle({"model": i + 1}, {"stick": {"colorscheme": palette[i % len(palette)]}})
+
+# Centre on the binding-site centroid we used as the docking target.
+view.zoomTo({"model": 1})
+view.show()
+"""),
+
+        markdown("""
+## 7. Save outputs
+
+### Background
+
+Two artefacts are the contract between this notebook and the next:
+
+- `data/derived/<target>/docking/poses.sdf` — all docked poses, with gnina's score tags. Notebook `04` will compute interaction fingerprints on these.
+- `data/derived/<target>/docking/gnina_scores.csv` — the tidy score table, with PoseBusters flags merged in.
+
+We rewrite the CSV with the QC-augmented columns so downstream code only has to read one file.
+"""),
+
+        code(title="Save the QC-augmented score table", source="""
+scores_path = OUT_DIR / "gnina_scores.csv"
+scores_qc.to_csv(scores_path, index=False)
+print(f"Wrote {len(scores_qc):,} rows → {scores_path.relative_to(REPO_ROOT)}")
+print(f"poses.sdf already at:  {(OUT_DIR / 'poses.sdf').relative_to(REPO_ROOT)}")
+"""),
+
+        markdown("""
+## Recap
+
+### Biomedical takeaway
+
+We took a library of drug-like compounds and asked, for each one, "could this fit in the ATP pocket of ERK2?". The answer is a 3-D pose plus three scoring numbers (Vina affinity, CNN score, CNN affinity). The redock sanity check told us our docking workflow recovers a known crystallographic pose within ~2 Å — i.e. the workflow is sound for this target. PoseBusters then weeded out poses that look fine on paper but are physically impossible. The PoseBusters-clean, top-1-pose-per-compound subset, ordered by CNN affinity, is the input to the next round of analysis.
+
+In a real wet-lab triage, this list would be the candidates worth interrogating with the more expensive rescorer (notebook `04`) and the orthogonal co-folding affinity check (notebook `05`); only compounds that survive *both* downstream steps will reach the shortlist.
+
+### Technical takeaway
+
+`src/aidd/docking.py` wraps the gnina CLI behind three composable functions: `dock_library` (batch over an SDF), `redock_reference` (single-ligand sanity check), and `run_posebusters` (per-pose QC). The module is platform-aware: it refuses loudly on Windows / macOS where gnina cannot run, and trivially extensible to a different docker (Vina, AutoDock4, smina) by swapping the CLI invocation. Idempotent caching at the disk level means re-running the notebook after an analysis edit does not re-run the (expensive) docker.
+
+### What's next in the pipeline
+
+- **`04_score_classical.ipynb`** — compute interaction fingerprints (ProLIF) on these poses and train a machine-learning rescorer against the ERK2 activity labels.
+- **`05_dock_boltz.ipynb`** — alternative fast lane: Boltz-2 co-folds protein + ligand and outputs an affinity score, without classical docking. The orthogonal signal for the consensus shortlist.
+- **`06_consensus_and_shortlist.ipynb`** — join the rescorer (notebook 04) and Boltz-2 (notebook 05) outputs; emit `shortlist.sdf` for wet-lab follow-up.
+
+### Further reading
+
+- McNutt et al., *J. Cheminform.* (2021), **13**, 43 — *GNINA 1.0: molecular docking with deep learning.* [doi:10.1186/s13321-021-00522-2](https://doi.org/10.1186/s13321-021-00522-2)
+- Buttenschoen, Morris, Deane, *Chem. Sci.* (2024), **15**, 3130 — *PoseBusters: AI-based docking methods fail to generate physically valid poses or generalise to novel sequences.* [doi:10.1039/D3SC04185A](https://doi.org/10.1039/D3SC04185A)
+- Trott & Olson, *J. Comput. Chem.* (2010), **31**, 455 — the AutoDock Vina paper (the empirical scoring function gnina is built on). [doi:10.1002/jcc.21334](https://doi.org/10.1002/jcc.21334)
+- Volkamer Lab **TeachOpenCADD** — *Talktorial T015: Protein-ligand docking* covers the same material in a different style. [projects.volkamerlab.org/teachopencadd](https://projects.volkamerlab.org/teachopencadd/)
+"""),
+    )
+    save(nb, NOTEBOOK_PATH)
+
+
+if __name__ == "__main__":
+    build()
