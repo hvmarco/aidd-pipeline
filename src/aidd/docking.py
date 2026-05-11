@@ -37,14 +37,25 @@ import logging
 import platform
 import shutil
 import subprocess
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence, Union
+from typing import Sequence, Union
 
 import pandas as pd
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, rdMolAlign
+
+# Silence RDKit's per-molecule logger for the rest of the session. PoseBusters,
+# parse_poses_sdf, and the 3-D viewer cells in notebook 03 all read gnina-output
+# SDFs through SDMolSupplier; those SDFs don't carry the "3D" flag in their
+# header, so RDKit emits one ``molecule is tagged as 2D, but at least one Z
+# coordinate is not zero`` warning per pose. On a 100-compound × 9-pose run
+# that's ~900 lines of noise drowning every cell output that touches an SDF.
+# The warning is cosmetic — RDKit parses the molecule correctly. Silencing
+# globally at import time (rather than scoped to one function call) matches
+# the same pattern aidd.ligands uses and avoids the issue where a scoped
+# silencer re-enables on exit and undoes the silence set by other modules.
+RDLogger.DisableLog("rdApp.*")
 
 PathLike = Union[str, Path]
 logger = logging.getLogger("aidd.docking")
@@ -485,25 +496,6 @@ def _read_first_mol(path: Path, *, index: int = 0) -> Chem.Mol:
 # PoseBusters QC
 # ---------------------------------------------------------------------------
 
-@contextmanager
-def _suppress_rdkit_warnings() -> Iterator[None]:
-    """Locally silence RDKit's per-molecule warning logger.
-
-    PoseBusters loads every pose in the input SDF through ``SDMolSupplier``,
-    and gnina-written SDFs don't carry the "3D" flag in their header — RDKit
-    emits a ``molecule is tagged as 2D, but at least one Z coordinate is not
-    zero`` warning per pose. On a 100-compound × 9-pose run that's ~900 lines
-    of noise drowning the actual output. The warning is cosmetic (RDKit still
-    parses the molecule correctly), so we silence it for the duration of the
-    PoseBusters call and re-enable it afterwards.
-    """
-    RDLogger.DisableLog("rdApp.warning")
-    try:
-        yield
-    finally:
-        RDLogger.EnableLog("rdApp.warning")
-
-
 def run_posebusters(
     poses_sdf: PathLike,
     receptor: PathLike | None = None,
@@ -523,15 +515,18 @@ def run_posebusters(
     the receptor" mode. ``mode='redock'`` adds RMSD-against-true checks but
     needs a known native pose. ``mode='mol'`` skips receptor-dependent checks
     (used for ligand-only screens).
+
+    RDKit's per-molecule SDF-parsing warnings are silenced at the module
+    level (see top of file) so the per-pose noise from PoseBusters' internal
+    SDMolSupplier calls doesn't drown the cell output.
     """
     from posebusters import PoseBusters  # imported lazily; pip-installed
 
     pb = PoseBusters(config=mode)
-    with _suppress_rdkit_warnings():
-        if receptor is not None and mode != "mol":
-            df = pb.bust(mol_pred=str(poses_sdf), mol_cond=str(receptor), full_report=full_report)
-        else:
-            df = pb.bust(mol_pred=str(poses_sdf), full_report=full_report)
+    if receptor is not None and mode != "mol":
+        df = pb.bust(mol_pred=str(poses_sdf), mol_cond=str(receptor), full_report=full_report)
+    else:
+        df = pb.bust(mol_pred=str(poses_sdf), full_report=full_report)
 
     bool_cols = [c for c in df.columns if df[c].dtype == bool]
     if bool_cols:
