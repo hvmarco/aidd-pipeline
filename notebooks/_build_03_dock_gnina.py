@@ -222,7 +222,7 @@ from aidd.docking import (
     dock_library, redock_reference,
     parse_poses_sdf, pose_rmsd, run_posebusters,
 )
-from aidd.io import mount_drive_if_colab
+from aidd.io import mount_drive_if_colab, pretty_path
 
 # Set up the data/derived/ root. On Colab this mounts Google Drive (one
 # OAuth prompt on first call per runtime, then silent) and resolves to a
@@ -316,7 +316,7 @@ else:
 # so this notebook is end-to-end runnable on a fresh Colab clone.
 LIGANDS = DATA_ROOT / TARGET / "ligands_prepared.sdf"
 if not LIGANDS.exists():
-    print(f"⚠ {LIGANDS.relative_to(REPO_ROOT)} not found — preparing a 10-compound")
+    print(f"⚠ {pretty_path(LIGANDS, DATA_ROOT, REPO_ROOT)} not found — preparing a 10-compound")
     print("  fallback inline. For real screens, run notebook 02 first.")
     from aidd.ligands import read_smiles, prepare_library, write_sdf
     smi_path = REPO_ROOT / "data" / "compounds" / TARGET / "training_small.smi"
@@ -329,7 +329,7 @@ if not LIGANDS.exists():
         LIGANDS,
         props_to_write=["smiles_std", "mw", "logp", "qed"],
     )
-    print(f"  wrote {sum(df_prepped['ok'])} prepared ligands → {LIGANDS.relative_to(REPO_ROOT)}")
+    print(f"  wrote {sum(df_prepped['ok'])} prepared ligands → {pretty_path(LIGANDS, DATA_ROOT, REPO_ROOT)}")
 
 # Binding-site geometry — from _archive/configs/plants_4fv7.conf (4FV7 frame).
 BINDING_SITE_CENTER = (1.34299, 17.3648, 40.9828)
@@ -347,10 +347,10 @@ assert LIGANDS.exists(),  f"missing ligands SDF {LIGANDS}"
 
 print()
 print(f"Target:                   {TARGET}")
-print(f"Receptor:                 {RECEPTOR.relative_to(REPO_ROOT)}")
+print(f"Receptor:                 {pretty_path(RECEPTOR, DATA_ROOT, REPO_ROOT)}")
 print(f"  ({RECEPTOR_KIND})")
-print(f"Ligand SDF:               {LIGANDS.relative_to(REPO_ROOT)}")
-print(f"Output dir:               {OUT_DIR.relative_to(REPO_ROOT)}")
+print(f"Ligand SDF:               {pretty_path(LIGANDS, DATA_ROOT, REPO_ROOT)}")
+print(f"Output dir:               {pretty_path(OUT_DIR, DATA_ROOT, REPO_ROOT)}")
 print(f"Binding-site center (Å):  {BINDING_SITE_CENTER}")
 print(f"Binding-site radius (Å):  {BINDING_SITE_RADIUS}")
 print(f"Search box size (Å):      {BOX.size[0]:.2f} per edge")
@@ -455,7 +455,7 @@ if SAMPLE_N is not None:
         if n >= SAMPLE_N:
             break
     writer.close()
-    print(f"Subset SDF: {subset_sdf.relative_to(REPO_ROOT)}  ({n} compounds)")
+    print(f"Subset SDF: {pretty_path(subset_sdf, DATA_ROOT, REPO_ROOT)}  ({n} compounds)")
     ligands_to_dock = subset_sdf
 
 scores = dock_library(
@@ -679,8 +679,8 @@ We rewrite the CSV with the QC-augmented columns so downstream code only has to 
         code(title="Save the QC-augmented score table", source="""
 scores_path = OUT_DIR / "gnina_scores.csv"
 scores_qc.to_csv(scores_path, index=False)
-print(f"Wrote {len(scores_qc):,} rows → {scores_path.relative_to(REPO_ROOT)}")
-print(f"poses.sdf already at:  {(OUT_DIR / 'poses.sdf').relative_to(REPO_ROOT)}")
+print(f"Wrote {len(scores_qc):,} rows → {pretty_path(scores_path, DATA_ROOT, REPO_ROOT)}")
+print(f"poses.sdf already at:  {pretty_path(OUT_DIR / 'poses.sdf', DATA_ROOT, REPO_ROOT)}")
 """),
 
         markdown("""

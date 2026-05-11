@@ -205,7 +205,7 @@ import seaborn as sns
 from aidd.structures import extract_plddt, plddt_summary, distogram, ca_rmsd
 from aidd.folding import parse_colabfold_ranking, best_model_path, summarise_run
 from aidd.viz import show_structure_colored_by_plddt
-from aidd.io import mount_drive_if_colab
+from aidd.io import mount_drive_if_colab, pretty_path
 
 # Set up the data/derived/ root. On Colab this mounts Google Drive (one
 # OAuth prompt on first call per runtime, then silent) and resolves to a
@@ -256,8 +256,8 @@ fasta_path.write_text(f">{TARGET_NAME}\\n{SEQUENCE}\\n")
 
 print(f"Target:    {TARGET_NAME}")
 print(f"Length:    {len(SEQUENCE)} amino acids")
-print(f"FASTA:     {fasta_path.relative_to(REPO_ROOT)}")
-print(f"Output:    {OUTPUT_DIR.relative_to(REPO_ROOT)}")
+print(f"FASTA:     {pretty_path(fasta_path, DATA_ROOT, REPO_ROOT)}")
+print(f"Output:    {pretty_path(OUTPUT_DIR, DATA_ROOT, REPO_ROOT)}")
 """),
 
         markdown("""
@@ -441,7 +441,7 @@ import shutil
 
 canonical = OUTPUT_DIR / f"{TARGET_NAME}_best.pdb"
 shutil.copyfile(best_pdb, canonical)
-print(f"Best model copied to: {canonical.relative_to(REPO_ROOT)}")
+print(f"Best model copied to: {pretty_path(canonical, DATA_ROOT, REPO_ROOT)}")
 print(f"This is what the docking notebook will load as the receptor.")
 """),
 

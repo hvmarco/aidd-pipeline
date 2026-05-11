@@ -151,7 +151,7 @@ from aidd.ligands import (
     read_smiles, prepare, prepare_library, write_sdf,
     LIPINSKI_RULES, VEBER_RULES,
 )
-from aidd.io import mount_drive_if_colab
+from aidd.io import mount_drive_if_colab, pretty_path
 
 # Set up the data/derived/ root. On Colab this mounts Google Drive (one
 # OAuth prompt on first call per runtime, then silent) and resolves to a
@@ -202,8 +202,8 @@ SAMPLE_N = 500              # set to None to process every compound in the file
 N_WORKERS = 4 if IS_COLAB else 1   # see the table above for guidance
 
 assert INPUT_SMI.exists(), f"missing {INPUT_SMI}"
-print(f"Input:     {INPUT_SMI.relative_to(REPO_ROOT)}")
-print(f"Output:    {OUTPUT_SDF.relative_to(REPO_ROOT)}")
+print(f"Input:     {pretty_path(INPUT_SMI, DATA_ROOT, REPO_ROOT)}")
+print(f"Output:    {pretty_path(OUTPUT_SDF, DATA_ROOT, REPO_ROOT)}")
 print(f"N_WORKERS: {N_WORKERS}  ({'Colab Linux' if IS_COLAB else 'local'})")
 """),
 
@@ -459,7 +459,7 @@ n = write_sdf(
         "lipinski_violations", "veber_violations",
     ],
 )
-print(f"Wrote {n:,} prepared molecules → {OUTPUT_SDF.relative_to(REPO_ROOT)}")
+print(f"Wrote {n:,} prepared molecules → {pretty_path(OUTPUT_SDF, DATA_ROOT, REPO_ROOT)}")
 """),
 
         markdown("""

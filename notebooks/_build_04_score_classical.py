@@ -207,7 +207,7 @@ import seaborn as sns
 import joblib
 from rdkit import Chem
 
-from aidd.io import mount_drive_if_colab
+from aidd.io import mount_drive_if_colab, pretty_path
 from aidd.ligands import pick_labeled_subset, prepare_library, write_sdf
 from aidd.ifp import compute_ifp, to_wide_features
 from aidd.docking import (
@@ -290,7 +290,7 @@ print(f"Subset: {len(subset_df):,} compounds  "
 
 # Cache the subset as a .smi for the prep stage. Columns: smiles, name.
 subset_df[["smiles", "name"]].to_csv(LABELED_SMI, sep="\\t", header=False, index=False)
-print(f"Wrote {LABELED_SMI.relative_to(REPO_ROOT)}")
+print(f"Wrote {pretty_path(LABELED_SMI, DATA_ROOT, REPO_ROOT)}")
 
 # Keep the labels in memory for later — same DataFrame, just rename.
 labels = subset_df[["name", "Active"]].rename(columns={"name": "compound_id"})
@@ -318,7 +318,7 @@ We re-use the standardisation + 3-D embed pipeline from `02_prepare_ligands` aga
 if LIGANDS_PREPARED.exists():
     n_cached = sum(1 for _ in Chem.SDMolSupplier(str(LIGANDS_PREPARED)))
     print(f"Using cached prepared library: {n_cached:,} compounds at "
-          f"{LIGANDS_PREPARED.relative_to(REPO_ROOT)}")
+          f"{pretty_path(LIGANDS_PREPARED, DATA_ROOT, REPO_ROOT)}")
 else:
     n_workers = 4 if IS_COLAB else 1  # Windows Jupyter prefers serial
     print(f"Preparing {len(subset_df):,} compounds (n_workers={n_workers})…")
@@ -335,7 +335,7 @@ else:
     )
     print(f"Standardise + 3-D embed: {prepared['ok'].sum():,}/{len(prepared):,} succeeded")
     print(f"After Lipinski + PAINS gates: {len(passing):,} compounds")
-    print(f"Wrote {n_written:,} → {LIGANDS_PREPARED.relative_to(REPO_ROOT)}")
+    print(f"Wrote {n_written:,} → {pretty_path(LIGANDS_PREPARED, DATA_ROOT, REPO_ROOT)}")
 """),
 
         markdown("""
@@ -391,9 +391,9 @@ BOX = box_from_center_radius(BINDING_SITE_CENTER, BINDING_SITE_RADIUS, margin=2.
 EXHAUSTIVENESS = 8
 NUM_MODES = 9
 
-print(f"Receptor:   {RECEPTOR.relative_to(REPO_ROOT)}")
+print(f"Receptor:   {pretty_path(RECEPTOR, DATA_ROOT, REPO_ROOT)}")
 print(f"            ({RECEPTOR_KIND})")
-print(f"Output:     {DOCK_DIR.relative_to(REPO_ROOT)}/")
+print(f"Output:     {pretty_path(DOCK_DIR, DATA_ROOT, REPO_ROOT)}/")
 print()
 
 if POSES_SDF.exists() and GNINA_SCORES_CSV.exists():
@@ -449,13 +449,13 @@ Wall time: ~5–15 minutes on CPU for 700 compounds × 9 poses.
 if TRAINING_IFP.exists():
     ifp_wide = pd.read_csv(TRAINING_IFP, index_col=0)
     print(f"Cached IFP: {ifp_wide.shape[0]:,} rows × {ifp_wide.shape[1]} features "
-          f"at {TRAINING_IFP.relative_to(REPO_ROOT)}")
+          f"at {pretty_path(TRAINING_IFP, DATA_ROOT, REPO_ROOT)}")
 else:
     print("Computing ProLIF interaction fingerprints on docked poses…")
     ifp_df = compute_ifp(RECEPTOR, POSES_SDF, progress=True)
     ifp_wide = to_wide_features(ifp_df)
     ifp_wide.to_csv(TRAINING_IFP, compression="gzip")
-    print(f"Wrote {ifp_wide.shape[0]:,} × {ifp_wide.shape[1]} → {TRAINING_IFP.relative_to(REPO_ROOT)}")
+    print(f"Wrote {ifp_wide.shape[0]:,} × {ifp_wide.shape[1]} → {pretty_path(TRAINING_IFP, DATA_ROOT, REPO_ROOT)}")
 
 ifp_wide.head()
 """),
@@ -735,7 +735,7 @@ scored["in_random_test_fold"]   = scored.index.isin(run_random["test_idx"])
 scored["in_scaffold_test_fold"] = scored.index.isin(run_scaffold["test_idx"])
 
 scored.to_parquet(SCORED_POSES, index=False)
-print(f"Wrote scored table → {SCORED_POSES.relative_to(REPO_ROOT)}  ({len(scored):,} rows)")
+print(f"Wrote scored table → {pretty_path(SCORED_POSES, DATA_ROOT, REPO_ROOT)}  ({len(scored):,} rows)")
 
 joblib.dump(
     {
@@ -749,7 +749,7 @@ joblib.dump(
     },
     RESCORER_PKL,
 )
-print(f"Wrote model       → {RESCORER_PKL.relative_to(REPO_ROOT)}")
+print(f"Wrote model       → {pretty_path(RESCORER_PKL, DATA_ROOT, REPO_ROOT)}")
 """),
 
         markdown("""

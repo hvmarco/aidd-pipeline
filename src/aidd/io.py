@@ -46,6 +46,25 @@ def is_colab() -> bool:
     return "google.colab" in sys.modules
 
 
+def pretty_path(path: PathLike, *bases: PathLike) -> Path:
+    """Return ``path`` relative to the first ``base`` it lives under, else absolute.
+
+    Convenience for notebook print statements that mix two roots — ``REPO_ROOT``
+    (the repo) and ``DATA_ROOT`` (Google Drive on Colab, the repo locally).
+    ``Path.relative_to(REPO_ROOT)`` raises when the path is on Drive, breaking
+    every "Wrote X" line. ``pretty_path(p, DATA_ROOT, REPO_ROOT)`` returns the
+    shortest sensible representation regardless of which root the path is under,
+    falling back to the absolute path if neither matches.
+    """
+    path = Path(path)
+    for base in bases:
+        try:
+            return path.relative_to(Path(base))
+        except ValueError:
+            continue
+    return path
+
+
 def mount_drive_if_colab(
     repo_root: PathLike,
     *,
