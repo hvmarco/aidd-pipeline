@@ -1,0 +1,60 @@
+# Notebooks
+
+The user-facing entry points for the aidd-pipeline. Each numbered notebook covers **one pipeline stage** and is independently runnable, given the previous stage's cached outputs on disk under `data/derived/<target>/<stage>/`.
+
+## How to use this folder
+
+**First time / learning mode** — open the notebooks in numerical order (`00` → `06`) and run them cell by cell. Each notebook has markdown blocks explaining both the biology and the technical choices, with a learning-objectives header and a recap at the end. Designed for clinicians, ML/data folks new to structural biology, and Bachelor / Master students.
+
+**Routine screening mode** — once the pipeline is dialled in for a target, use `99_screen_library.ipynb` to run the whole flow end-to-end without scrolling through the teaching content.
+
+**Mixed use** — re-run only the notebook that changes. For example, if you swap in a new candidate library, you re-run `02_prepare_ligands` and everything from `03_dock_gnina` onward; folding (`01`) and the rescorer (`04`, trained per target) stay cached.
+
+## Pipeline overview
+
+```
+sequence / PDB ──► 01_fold_target ──┐
+                                    ├──► 03_dock_gnina ──► 04_score_classical ──┐
+SMILES library ──► 02_prepare ──────┤                                            ├──► 06_consensus ──► shortlist.sdf
+                                    └──► 05_dock_boltz ───────────────────────────┘
+```
+
+## The notebooks
+
+| #   | File                                  | Stage                                        | Where it runs        | Status |
+|-----|---------------------------------------|----------------------------------------------|----------------------|--------|
+| 00  | `00_quickstart.ipynb`                 | IFP demo on ERK2 (sanity check)              | local CPU / Colab    | ✅ done |
+| 01  | `01_fold_target.ipynb`                | ColabFold target structure prediction         | **Colab GPU**        | planned |
+| 02  | `02_prepare_ligands.ipynb`            | SMILES → standardised → drug-like → 3-D       | local CPU / Colab    | ✅ done |
+| 03  | `03_dock_gnina.ipynb`                 | gnina docking + PoseBusters QC                | local CPU / Colab    | planned |
+| 04  | `04_score_classical.ipynb`            | IFP + ML rescorer (sklearn / XGBoost)         | local CPU / Colab    | planned |
+| 05  | `05_dock_boltz.ipynb`                 | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | planned |
+| 06  | `06_consensus_and_shortlist.ipynb`    | consensus rank → `shortlist.sdf`              | local CPU / Colab    | planned |
+| 99  | `99_screen_library.ipynb`             | end-to-end runner for routine screens         | Colab Pro+ recommended | planned (after 06) |
+
+Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold) and `05` (Boltz-2); the others run faster locally but work in Colab too.
+
+## Inputs / outputs at each stage
+
+The contract between notebooks is simple: each stage reads from and writes to `data/derived/<target>/<stage>/`. The exact paths each notebook expects are stated in its first markdown cell.
+
+| Stage              | Reads                                    | Writes                                                                |
+|--------------------|------------------------------------------|------------------------------------------------------------------------|
+| 00 quickstart      | `data/structures/*.pdb`, `data/ligands/*.pdb` | nothing persistent (demo)                                              |
+| 01 fold_target     | target sequence (FASTA)                  | `data/derived/<target>/fold/{pred.pdb, msa/, ranking.csv}`             |
+| 02 prepare_ligands | `data/compounds/<target>/*.smi`          | `data/derived/<target>/ligands/ligands_prepared.sdf`                   |
+| 03 dock_gnina      | prepared SDF + receptor PDB              | `data/derived/<target>/docking/{poses.sdf, gnina_scores.csv}`          |
+| 04 score_classical | poses SDF + receptor + activity labels   | `data/derived/<target>/scoring/{rescorer.pkl, scored_poses.parquet}`   |
+| 05 dock_boltz      | prepared SDF + target sequence/structure | `data/derived/<target>/boltz/{poses.sdf, affinity.csv}`                |
+| 06 consensus       | scored_poses.parquet + affinity.csv      | `data/derived/<target>/shortlist/{shortlist.sdf, shortlist.csv}`       |
+| 99 runner          | a target + a SMILES library              | the full chain above                                                  |
+
+## Notebook conventions
+
+- Every notebook starts with a title cell containing **learning objectives**, **audience**, **prerequisites**, and **runtime**.
+- A "key terms" table near the top defines all jargon used later.
+- Each section follows: *Background* → "*what this cell does*" → code → *Interpretation*.
+- Recap cell at the end with biomedical + technical takeaways and 2–3 further-reading paper DOIs.
+- All notebooks include `%load_ext autoreload` so edits to `src/aidd/` propagate without kernel restarts.
+
+See `../CLAUDE.md` § *Notebook pedagogy* for the full rule set.

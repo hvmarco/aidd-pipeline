@@ -17,6 +17,7 @@
 | GPU access | locked | **Colab-only** (free or Pro). All GPU steps are Colab notebooks; local runs are CPU-only via gnina. |
 | v1 throughput | locked | **1k–10k compounds per screen.** Notebook-driven with a per-stage cached-file batch driver; resumable. |
 | Triage philosophy | locked | **Defensible consensus** — Boltz-2 affinity rank AND gnina+IFP-rescorer rank must both place a compound in top X% (X tunable, default 5%). |
+| Notebook structure | locked | **7 teaching notebooks (00–06) + 1 production runner (99)**, each numbered notebook is one pipeline stage; each is independently runnable from cached intermediate outputs in `data/derived/<target>/<stage>/`. The runner (99) is built last, after 06. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
