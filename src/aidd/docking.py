@@ -213,9 +213,7 @@ def dock_library(
     with log_path.open("w") as fh:
         proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"gnina exited with status {proc.returncode}. See {log_path} for stderr."
-        )
+        raise RuntimeError(_format_gnina_error(proc.returncode, log_path))
 
     df = parse_poses_sdf(poses_sdf)
     df.to_csv(scores_csv, index=False)
@@ -273,9 +271,7 @@ def redock_reference(
         with log_path.open("w") as fh:
             proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"gnina exited with status {proc.returncode}. See {log_path}."
-            )
+            raise RuntimeError(_format_gnina_error(proc.returncode, log_path))
 
     poses_df = parse_poses_sdf(redock_sdf)
     if poses_df.empty:
@@ -331,6 +327,37 @@ def parse_poses_sdf(path: PathLike) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _format_gnina_error(returncode: int, log_path: Path) -> str:
+    """Build a debug-friendly message from a non-zero gnina exit.
+
+    Exit code 127 from an existing executable typically means a missing shared
+    library at dynamic-load time (e.g. ``libcuda.so.1`` on a CPU-only runtime);
+    we call that out explicitly. For other non-zero exits we tail the log so
+    the user sees the actual gnina stderr without having to navigate to it.
+    """
+    tail = ""
+    try:
+        with log_path.open() as fh:
+            lines = fh.readlines()
+        tail = "".join(lines[-30:]).rstrip()
+    except OSError:
+        pass
+
+    hint = ""
+    if returncode == 127:
+        hint = (
+            "\n\nExit code 127 usually means gnina is present but a shared "
+            "library it links against is missing at load time. Most common "
+            "cause: gnina v1.3+ is CUDA-linked (PyTorch backend) and the "
+            "Colab runtime is CPU-only. Switch the runtime to a T4 GPU "
+            "(Runtime → Change runtime type → T4 GPU) and re-run."
+        )
+    return (
+        f"gnina exited with status {returncode}. Full log at {log_path}. "
+        f"Last lines:\n{tail}{hint}"
+    )
 
 
 def _float_prop(mol: Chem.Mol, key: str) -> float | None:

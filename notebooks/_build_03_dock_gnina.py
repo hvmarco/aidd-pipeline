@@ -31,7 +31,7 @@ def build() -> None:
 
 So far we have a receptor 3-D model (notebook `01`) and a library of drug-like, 3-D-embedded ligands (notebook `02`). This notebook brings them together: it **docks** each ligand into the receptor's binding site, scores the resulting poses, runs **PoseBusters** to filter out physically implausible poses, and writes a tidy SDF + score table for the rescoring notebook downstream.
 
-> ⚠️ **gnina is Linux-native.** It runs on Colab out of the box (the setup cell downloads the binary), under WSL2 on Windows, or in a Linux container on macOS. **Local Windows and native macOS are unsupported by the docker itself** — run this notebook on Colab if you are on either of those.
+> ⚠️ **gnina is Linux- and GPU-native.** From v1.3 (Oct 2024) the binary is linked against PyTorch + CUDA, so it needs a GPU Colab runtime — the setup cell verifies this before going further. It also runs under WSL2 + CUDA on Windows, or in a Linux+GPU container. **Local Windows and native macOS are unsupported by the docker itself** — run this notebook on Colab if you are on either of those.
 
 ## Learning objectives
 
@@ -52,16 +52,16 @@ After running this notebook you will be able to:
 
 ## Prerequisites
 
-- A Colab runtime, **or** a Linux / WSL2 box with gnina installed (Windows / macOS users go via Colab — see Section 1).
+- **A Colab GPU runtime** (Runtime → Change runtime type → T4 GPU). The notebook is marked GPU by default; if you opened it on a CPU runtime, switch first. gnina v1.3 links against CUDA libraries and will not load on CPU runtimes.
 - The ERK2 crystal receptor (`data/structures/erk2_4fv7.pdb`) and its co-crystallised ligand (`data/ligands/erk2_4fv7_ref.pdb`) — both ship with the repo, so a fresh Colab clone has everything needed.
 - *Optional*: notebook `02_prepare_ligands` already run, with a prepared SDF at `data/derived/<target>/ligands_prepared.sdf`. If absent, this notebook prepares a 10-compound smoke-test subset inline.
 
 ## Runtime
 
 - **Setup + gnina install (Colab):** ~1 min, one-time per Colab runtime.
-- **Redock sanity check:** ~30 s on Colab CPU.
-- **Library dock (100 compounds, exhaustiveness 8):** ~20–30 min on a 4-core Colab CPU. Scales roughly linearly with library size and with `--exhaustiveness`.
-- **PoseBusters QC:** ~1–2 min on 100 compounds × 9 poses each.
+- **Redock sanity check:** ~30 s on a T4 GPU.
+- **Library dock (25 compounds, exhaustiveness 8):** ~5–10 min on a T4 GPU. Scales roughly linearly with library size and with `--exhaustiveness`.
+- **PoseBusters QC:** ~1–2 min on 25 compounds × 9 poses each.
 
 Set `SAMPLE_N` in Section 2 to a small number (10–25) for a quick first run; bump it up once everything is wired.
 """),
@@ -115,12 +115,14 @@ Detect Colab vs local, clone the repo on Colab, install **gnina** (Linux-native 
 
 ### About the gnina install (read once, then forget)
 
-gnina ships as a self-contained Linux binary in [GitHub Releases](https://github.com/gnina/gnina/releases). On Colab we download a pinned version directly to `/usr/local/bin/gnina`. Updates: bump `GNINA_VERSION` below, re-run on a fresh runtime, commit on success.
+gnina ships as a Linux binary in [GitHub Releases](https://github.com/gnina/gnina/releases). From [v1.3 (Oct 2024)](https://github.com/gnina/gnina/releases/tag/v1.3) it links against PyTorch + CUDA — so a GPU runtime is **required**, not optional. We pin to **v1.3.2** with the `gnina.1.3.2` asset (the upstream release notes describe it as the *"older-CUDA, more compatible"* binary; the `cuda12.8` variant is for newer cards). To update: bump `GNINA_VERSION` + `GNINA_ASSET` below, re-run on a fresh runtime, commit on success.
 
-On Windows / macOS, the binary will not run. The local Python in those environments is still useful for the parsing / visualisation cells — but the dock itself must happen on Colab (or under WSL2).
+The setup cell probes both `nvidia-smi` (is a GPU attached?) and `gnina --version` (does the binary load?) and bails out with a clear message if either fails, so you find out at install time rather than 5 cells later.
+
+On Windows / macOS, the binary will not run. The local Python in those environments is still useful for the parsing / visualisation cells — but the dock itself must happen on Colab (or under WSL2 with CUDA).
 """),
 
-        code(title="Setup: detect Colab vs local, install gnina, clone repo", source="""
+        code(title="Setup: clone repo, install gnina, verify GPU + binary loads", source="""
 import sys
 import importlib
 import shutil
@@ -130,11 +132,32 @@ from pathlib import Path
 IS_COLAB = "google.colab" in sys.modules
 
 # gnina pin — update via the procedure described in the markdown above.
-GNINA_VERSION = "v1.3"
+GNINA_VERSION = "v1.3.2"
+GNINA_ASSET   = "gnina.1.3.2"   # "older-CUDA, more compatible" binary; .cuda12.8 is for newer cards
 LAST_VERIFIED = "2026-05-11"
 
+
+def _gnina_works() -> bool:
+    if not shutil.which("gnina"):
+        return False
+    try:
+        r = subprocess.run(["gnina", "--version"], capture_output=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 if IS_COLAB:
-    # 1. Repo. Must be public for unauthenticated clone from Colab.
+    # 1. Fail loudly if no GPU is attached — gnina v1.3+ is CUDA-linked.
+    gpu_ok = subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0
+    if not gpu_ok:
+        raise RuntimeError(
+            "No GPU detected. gnina v1.3+ links against CUDA and will not load "
+            "on CPU runtimes. Switch to a GPU: Runtime → Change runtime type → "
+            "T4 GPU, then re-run this cell."
+        )
+
+    # 2. Repo. Must be public for unauthenticated clone from Colab.
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
         !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
@@ -145,19 +168,33 @@ if IS_COLAB:
             "Personal Access Token via Colab Secrets, then re-run this cell."
         )
 
-    # 2. gnina static binary (Linux-only release).
-    if not shutil.which("gnina"):
-        print(f"Downloading gnina {GNINA_VERSION} (verified {LAST_VERIFIED})…")
-        url = f"https://github.com/gnina/gnina/releases/download/{GNINA_VERSION}/gnina"
+    # 3. gnina binary. Replace any existing one that doesn't load (e.g. a stale
+    # CPU-only download from a previous broken install).
+    if not _gnina_works():
+        print(f"Downloading gnina {GNINA_VERSION} ({GNINA_ASSET}, verified {LAST_VERIFIED})…")
+        url = f"https://github.com/gnina/gnina/releases/download/{GNINA_VERSION}/{GNINA_ASSET}"
         !wget -q -O /usr/local/bin/gnina {url}
         !chmod +x /usr/local/bin/gnina
 
-    # 3. PoseBusters (pip; not in Colab's default image).
+        # Probe — fail loudly if the binary cannot load (missing CUDA libs etc.)
+        probe = subprocess.run(["gnina", "--version"], capture_output=True, text=True)
+        if probe.returncode != 0:
+            raise RuntimeError(
+                f"gnina installed but `gnina --version` exited {probe.returncode}. "
+                f"stderr:\\n{probe.stderr}\\n\\nMost common cause is a missing CUDA "
+                "library — check `!ldd /usr/local/bin/gnina | grep 'not found'` "
+                "and confirm the runtime is GPU-backed."
+            )
+
+    # 4. PoseBusters + the rest (not in Colab's default image).
     !pip install -q posebusters rdkit datamol "prolif>=2.0" py3Dmol biopython
 
-    # 4. Imports.
+    # 5. Imports.
     sys.path.insert(0, str(REPO_ROOT / "src"))
     importlib.invalidate_caches()
+
+    # 6. Confirm everything is wired before continuing.
+    !gnina --version | head -1
 else:
     REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -620,6 +657,8 @@ In a real wet-lab triage, this list would be the candidates worth interrogating 
 - Trott & Olson, *J. Comput. Chem.* (2010), **31**, 455 — the AutoDock Vina paper (the empirical scoring function gnina is built on). [doi:10.1002/jcc.21334](https://doi.org/10.1002/jcc.21334)
 - Volkamer Lab **TeachOpenCADD** — *Talktorial T015: Protein-ligand docking* covers the same material in a different style. [projects.volkamerlab.org/teachopencadd](https://projects.volkamerlab.org/teachopencadd/)
 """),
+        accelerator="GPU",
+        gpu_type="T4",
     )
     save(nb, NOTEBOOK_PATH)
 
