@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Union
 
 import datamol as dm
+import numpy as np
 import pandas as pd
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, Descriptors, QED
@@ -56,6 +57,69 @@ def read_smiles(
         out["name"] = df.iloc[:, name_col].astype(str).str.strip()
     else:
         out["name"] = ""
+    return out
+
+
+def pick_labeled_subset(
+    smiles_path: PathLike,
+    labels_path: PathLike,
+    *,
+    all_actives: bool = True,
+    inactive_multiplier: int = 2,
+    cap: int | None = 2000,
+    label_col: str = "Active",
+    id_col: str = "CPD_ID",
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Build a labelled training subset from a SMILES library + activity labels.
+
+    Returns all actives plus ``inactive_multiplier`` × as many randomly sampled
+    inactives. If the combined size exceeds ``cap``, the inactives are trimmed
+    so the total fits the cap while keeping every active. Used to size the
+    training set for downstream docking + rescorer training: maximises positive
+    count for a stable ROC-AUC while keeping docking budget bounded.
+
+    The labels file is whitespace-separated with a header row and at least the
+    columns ``CPD_ID`` and ``Active`` (0/1). Compound IDs in the labels file
+    must match the ``name`` column of the SMILES file (numeric IDs for
+    ``training.smi``; not the ``ERKxxx`` IDs in ``training_small.smi``).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns ``['smiles', 'name', label_col]``. ``name`` is the matched ID,
+        as a string; ``Active`` is the 0/1 integer label. Rows are shuffled
+        (``seed``) so downstream pose-selection / split steps do not see
+        actives clustered at the top.
+    """
+    smiles_df = read_smiles(smiles_path)
+    smiles_df["name"] = smiles_df["name"].astype(str)
+
+    labels_df = pd.read_csv(labels_path, sep=r"\s+", dtype={id_col: str})
+    labels_df[label_col] = labels_df[label_col].astype(int)
+
+    merged = smiles_df.merge(labels_df[[id_col, label_col]], left_on="name", right_on=id_col, how="inner")
+    if id_col != "name":
+        merged = merged.drop(columns=[id_col])
+
+    rng = np.random.default_rng(seed)
+
+    actives = merged[merged[label_col] == 1]
+    inactives = merged[merged[label_col] == 0]
+
+    if not all_actives:
+        n_actives_keep = min(len(actives), (cap or len(actives)) // (1 + inactive_multiplier))
+        actives = actives.sample(n=n_actives_keep, random_state=int(rng.integers(2**31 - 1)))
+
+    n_inactives_target = len(actives) * inactive_multiplier
+    if cap is not None:
+        n_inactives_target = min(n_inactives_target, max(0, cap - len(actives)))
+    n_inactives_target = min(n_inactives_target, len(inactives))
+
+    inactives_sample = inactives.sample(n=n_inactives_target, random_state=int(rng.integers(2**31 - 1)))
+
+    out = pd.concat([actives, inactives_sample], ignore_index=True)
+    out = out.sample(frac=1.0, random_state=int(rng.integers(2**31 - 1))).reset_index(drop=True)
     return out
 
 
