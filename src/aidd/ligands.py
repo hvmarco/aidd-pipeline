@@ -17,6 +17,7 @@ Adapted from cells in ``_archive/descriptors_qsar_lab.ipynb``.
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Iterable, Union
 
@@ -250,12 +251,22 @@ def prepare_library(
     """Run :func:`prepare` over a DataFrame of SMILES.
 
     Uses ``datamol.parallelized`` (joblib/loky) for parallel execution where
-    worth it. ``n_workers=1`` for serial / debugging — recommended in Jupyter
-    on Windows unless you've verified the spawn idiom works for you.
+    worth it.
+
+    Picking ``n_workers``:
+        - Colab / any Linux Jupyter:   set 4–8, runs cleanly in a cell.
+        - Windows / macOS Jupyter:     1 is safest; 2–4 *usually* works since
+                                       this function uses ``functools.partial``
+                                       (picklable) instead of a closure, but
+                                       certain Jupyter configurations still
+                                       fight ``spawn``. If it fails, fall back
+                                       to a script invocation.
+        - Python script (any OS):      pick whatever your CPU has cores for.
     """
     smiles_list = df[smiles_col].tolist()
+    worker = partial(prepare, n_confs=n_confs)
     results = dm.parallelized(
-        lambda smi: prepare(smi, n_confs=n_confs),
+        worker,
         smiles_list,
         n_jobs=n_workers,
         progress=progress,
