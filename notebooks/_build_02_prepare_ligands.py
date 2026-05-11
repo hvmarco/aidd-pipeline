@@ -151,8 +151,19 @@ from aidd.ligands import (
     read_smiles, prepare, prepare_library, write_sdf,
     LIPINSKI_RULES, VEBER_RULES,
 )
+from aidd.io import mount_drive_if_colab
+
+# Set up the data/derived/ root. On Colab this mounts Google Drive (one
+# OAuth prompt on first call per runtime, then silent) and resolves to a
+# Drive-backed path so the prepared SDF survives runtime deaths.
+# Locally, it resolves to <repo_root>/data/derived/, unchanged from before.
+# Flip USE_DRIVE = False to opt out (one-off Colab testing without a Drive
+# auth prompt, or to keep outputs purely on /content/).
+USE_DRIVE = IS_COLAB
+DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
 
 sns.set_theme(style="whitegrid")
+print(f"DATA_ROOT: {DATA_ROOT}")
 print("setup ok")
 """),
 
@@ -185,7 +196,7 @@ We set two key parameters:
         code(title="Inputs: SMILES file, labels, output path + run parameters", source="""
 INPUT_SMI = REPO_ROOT / "data" / "compounds" / "erk2" / "training_small.smi"
 LABELS    = REPO_ROOT / "data" / "labels" / "erk2_training.tsv"
-OUTPUT_SDF = REPO_ROOT / "data" / "derived" / "erk2" / "ligands_prepared.sdf"
+OUTPUT_SDF = DATA_ROOT / "erk2" / "ligands_prepared.sdf"
 
 SAMPLE_N = 500              # set to None to process every compound in the file
 N_WORKERS = 4 if IS_COLAB else 1   # see the table above for guidance

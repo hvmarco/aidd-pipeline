@@ -222,6 +222,17 @@ from aidd.docking import (
     dock_library, redock_reference,
     parse_poses_sdf, pose_rmsd, run_posebusters,
 )
+from aidd.io import mount_drive_if_colab
+
+# Set up the data/derived/ root. On Colab this mounts Google Drive (one
+# OAuth prompt on first call per runtime, then silent) and resolves to a
+# Drive-backed path so docked poses + scores survive runtime deaths.
+# Locally, it resolves to <repo_root>/data/derived/, unchanged from before.
+# Flip USE_DRIVE = False to opt out (one-off Colab testing without a Drive
+# auth prompt, or to keep outputs purely on /content/).
+USE_DRIVE = IS_COLAB
+DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
+print(f"DATA_ROOT: {DATA_ROOT}")
 
 sns.set_theme(style="whitegrid")
 
@@ -273,10 +284,10 @@ CRYSTAL_LIGAND   = REPO_ROOT / "data" / "ligands"    / "erk2_4fv7_ref.pdb"
 
 # AF model from notebook 01 — gitignored, exists only after 01 has been run
 # on this machine / Colab runtime.
-AF_RECEPTOR = REPO_ROOT / "data" / "derived" / TARGET / "fold" / f"{TARGET}_best.pdb"
+AF_RECEPTOR = DATA_ROOT / TARGET / "fold" / f"{TARGET}_best.pdb"
 
 # Where docking outputs land.
-OUT_DIR = REPO_ROOT / "data" / "derived" / TARGET / "docking"
+OUT_DIR = DATA_ROOT / TARGET / "docking"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Build the receptor for the library dock. The binding-site coordinates below
@@ -303,7 +314,7 @@ else:
 
 # Ligand SDF: prefer notebook 02's output; fall back to a small inline prep
 # so this notebook is end-to-end runnable on a fresh Colab clone.
-LIGANDS = REPO_ROOT / "data" / "derived" / TARGET / "ligands_prepared.sdf"
+LIGANDS = DATA_ROOT / TARGET / "ligands_prepared.sdf"
 if not LIGANDS.exists():
     print(f"⚠ {LIGANDS.relative_to(REPO_ROOT)} not found — preparing a 10-compound")
     print("  fallback inline. For real screens, run notebook 02 first.")
@@ -311,7 +322,7 @@ if not LIGANDS.exists():
     smi_path = REPO_ROOT / "data" / "compounds" / TARGET / "training_small.smi"
     df_smi = read_smiles(smi_path).head(10)
     df_prepped = prepare_library(df_smi, n_workers=1, progress=False)
-    LIGANDS = REPO_ROOT / "data" / "derived" / TARGET / "ligands_smoketest.sdf"
+    LIGANDS = DATA_ROOT / TARGET / "ligands_smoketest.sdf"
     LIGANDS.parent.mkdir(parents=True, exist_ok=True)
     write_sdf(
         df_prepped[df_prepped["ok"]],

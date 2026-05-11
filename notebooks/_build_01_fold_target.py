@@ -205,8 +205,19 @@ import seaborn as sns
 from aidd.structures import extract_plddt, plddt_summary, distogram, ca_rmsd
 from aidd.folding import parse_colabfold_ranking, best_model_path, summarise_run
 from aidd.viz import show_structure_colored_by_plddt
+from aidd.io import mount_drive_if_colab
+
+# Set up the data/derived/ root. On Colab this mounts Google Drive (one
+# OAuth prompt on first call per runtime, then silent) and resolves to a
+# Drive-backed path so the folded structure survives runtime deaths.
+# Locally, it resolves to <repo_root>/data/derived/, unchanged from before.
+# Flip USE_DRIVE = False to opt out (one-off Colab testing without a Drive
+# auth prompt, or to keep outputs purely on /content/).
+USE_DRIVE = IS_COLAB
+DATA_ROOT = mount_drive_if_colab(REPO_ROOT, use_drive=USE_DRIVE)
 
 sns.set_theme(style="whitegrid")
+print(f"DATA_ROOT: {DATA_ROOT}")
 print("setup ok")
 """),
 
@@ -236,7 +247,7 @@ SEQUENCE = (
 # from urllib.request import urlopen
 # SEQUENCE = urlopen("https://rest.uniprot.org/uniprotkb/P28482.fasta").read().decode().split("\\n", 1)[1].replace("\\n", "")
 
-OUTPUT_DIR = REPO_ROOT / "data" / "derived" / TARGET_NAME / "fold"
+OUTPUT_DIR = DATA_ROOT / TARGET_NAME / "fold"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Write a FASTA for ColabFold.
