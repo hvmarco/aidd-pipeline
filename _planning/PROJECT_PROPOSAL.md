@@ -21,7 +21,7 @@
 | Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 07 (`07_mutation_analysis`)** compares WT vs mutant outputs (structure, IFP, docking shortlist) for drug-resistance / structural-impact studies. See §8. |
 | AF3 fold provider toggle in notebook 99 | locked | Notebook 99 (production runner) gets an **optional `FOLD_PROVIDER` parameter** with values `"colabfold"` (AF2, default — open and reproducible for all users) and `"af3_server"` (AlphaFold Server API — requires per-user academic API key in Colab Secrets, owner-only path). Both branches produce the same canonical `<target>_best.pdb` so downstream cells don't care which folder was used. Single notebook with one toggle, not two parallel notebooks. See §9. |
 | Research-domain focus | locked (2026-05-12) | The pipeline is **shaped for pharmacogenomics + variant-function studies in common solid tumours** (colorectal, lung, breast, GI, GU, ovarian). The central question is "*how does an amino-acid variant change enzyme function / drug binding?*" — not generic SBVS. **Notebook 07 (mutation analysis) is the headline notebook**, not an extension. Notebook 99 takes `(target, variants=[…])` and runs the WT-vs-variant comparison as its primary mode. The four headline demos are listed in §10. |
-| Post-13-step roadmap | locked (2026-05-12) | After steps 1–13 close, the prioritised additions are: **(1) AlphaMissense lookup** (zero-compute pathogenicity scores per variant) — ~½ day; **(1.5) gnomAD allele-frequency lookup** (population-stratified variant prioritisation) — ~½ day, paired with (1); **(2) RaSP ΔΔG integration** for loss-of-function variants — ~1–2 days; **(3) PharmGKB / CPIC clinical ground-truth lookup** — ~1–2 days; **(4) fpocket binding-site detection** on variant folds — ~1 day. See §11 for the rationale and ordering. |
+| Post-13-step roadmap | locked (2026-05-12) | After steps 1–13 close, the prioritised additions are: **(1) AlphaMissense lookup** (zero-compute pathogenicity scores per variant) — ~½ day; **(1.5) gnomAD allele-frequency lookup** (population-stratified variant prioritisation) — ~½ day, paired with (1); **(2) RaSP ΔΔG integration** for loss-of-function variants — ~1–2 days; **(3) PharmGKB / CPIC clinical ground-truth lookup** — ~1–2 days; **(4) fpocket binding-site detection** on variant folds — ~1 day; **(4.5) resumable per-compound docking** so long runs survive Colab disconnects — ~1 day. See §11 for the rationale and ordering. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
@@ -370,6 +370,18 @@ For pharmacogenes, gnomAD also surfaces **population-stratified frequencies** �
 **Why for this pipeline:** for *any* pharmacogene the project owner takes on beyond the demo set, hand-curating a binding-site box is the manual step that won't scale. fpocket on WT and on the variant fold ALSO gives "*pocket volume changed from N to M Å³*" as a direct readout of the variant's structural impact — independent signal beyond ΔΔG.
 
 **Integration:** wraps in `aidd.docking` as an alternative to hand-curated binding-site coordinates. New cell in notebook 07 reporting pocket-geometry deltas WT vs variant.
+
+### Priority 4.5 — Resumable per-compound docking (~1 day)
+
+**What:** refactor `aidd.docking.dock_library` so each compound's docking output is written to disk before moving on, and the cache check skips already-completed compounds rather than requiring the whole library to finish in one go.
+
+**Why:** the current implementation runs gnina as a single subprocess on the whole ligand SDF and only writes `gnina_scores.csv` after the entire run completes. If Colab disconnects or the cell is interrupted after 80 minutes of an 90-minute run, **the whole thing has to start over**. For the 693-compound labelled subset in notebook 04 this is annoying but tolerable; for the eventual full 47k-compound screens (and any larger library handed to notebook 99) it becomes a real productivity blocker — one disconnect 6 hours in and you start at zero.
+
+**Integration:** `dock_library` becomes a loop that splits the SDF into per-compound chunks, runs gnina per chunk (or in small batches), and accumulates results. Cache check walks the per-compound output directory and only docks compounds that don't yet have a saved score row. The public API stays the same; downstream callers don't know the difference.
+
+**When this lands:** **after the current 13-step plan closes** (no urgency for the current ERK2-scale demos), but **before any production screen of >5,000 compounds**. Don't refactor mid-step-10 — the existing implementation is good enough at ~693 compounds.
+
+**Why this is on the post-13-step roadmap and not in the immediate work:** this is a robustness improvement, not a methodological one. It doesn't change any predictions; it just makes long runs resumable. Worth doing once the rest of the architecture is stable.
 
 ### Priority 5 — TeachOpenCADD T032-style proteochemometrics (~3–5 days)
 
