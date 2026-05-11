@@ -104,44 +104,42 @@ What AlphaFold2 does **not** do: predict conformational dynamics, protein–liga
 
 ### About this install (read once, then forget)
 
-The install commands below **mirror the install pattern of ColabFold's official notebook**, [`AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb), pinned to **ColabFold commit `de5ab5f` (v1.6.1)**, verified working on a fresh Colab T4 runtime on **2026-05-11**.
+This cell **mirrors the install pattern of ColabFold's official notebook**, [`AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb). The only difference: we pin ColabFold to a specific commit (`de5ab5f`, v1.6.1, verified working on a fresh Colab T4 runtime on **2026-05-11**) so the install is reproducible six months from now.
 
-Why pin to a specific commit? AlphaFold and its surrounding ML libraries (JAX, haiku, alphafold-internal code) require a coherent version set; a single mis-pin upstream cascades into hours of debugging downstream. Pinning gives us **reproducibility** — a reviewer running this notebook in six months sees the same output — and **predictability** — no surprise breakages from upstream changes.
+**Why we trust Colab's default JAX rather than pinning it ourselves:** ColabFold's notebook deliberately uses Colab's default JAX on GPU runtimes (it only pins JAX on TPU). We tested this directly on **2026-05-11**: their notebook ran a full AlphaFold2 prediction end-to-end with no version pinning, no `dm-haiku` forcing, and no TF reinstall — proving Colab's current default JAX is compatible with the bundled AlphaFold code. Earlier we tried pinning JAX 0.4.26 + `dm-haiku` 0.0.12 + TF force-reinstall as a defensive layer; that turned out to *cause* problems (PJRT plugin mismatches, haiku symbol skew) rather than solve them. Less is more here.
 
-**To update this pin** (recommended every ~3 months):
+**To update the ColabFold pin** (recommended every ~3 months, or whenever a Colab runtime change breaks this cell):
 1. Visit [`AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb) at the current ColabFold master.
-2. Copy the contents of the install cell.
-3. Diff against the cell below; update the pinned commit + version strings.
-4. Test on a fresh Colab runtime; commit the changes here. The git log becomes the methodological provenance.
+2. Run their install cell on a fresh Colab runtime; confirm a small test prediction completes.
+3. Find the latest commit hash on [ColabFold's commit history](https://github.com/sokrypton/ColabFold/commits/main); update `COLABFOLD_COMMIT` below.
+4. Re-run this notebook end-to-end; commit on success. The git log becomes the methodological provenance.
+
+**If a future Colab JAX upgrade breaks this cell** (i.e. ColabFold's vanilla install starts failing because Colab's default JAX advances past what AlphaFold supports), the historical defensive pins are preserved in git: see commit `08d4806` for the pinning approach we used before this simplification.
 
 ### What the cell does
 
 On Colab, in order:
 
-1. **Installs ColabFold + AlphaFold (minus JAX)** at the pinned commit, plus `tpu-info` (skips a broken-on-modern-JAX TPU-detection code path inside ColabFold's CPU/GPU/TPU selector).
-2. **Wipes Colab's pre-installed JAX components** (`jax`, `jaxlib`, and the separate `jax-cuda12-plugin` / `-pjrt` packages). The separate plugin packages aren't named in our JAX install spec, so `--force-reinstall` doesn't downgrade them — leaving them in place causes a PJRT API version mismatch at runtime.
-3. **Pins JAX to 0.4.26** with CUDA bundled in `jaxlib` (the `cuda12_pip` extras — no separate plugin, no PJRT negotiation, no mismatch). This is also the last JAX version that supports the legacy `jnp.clip(a_min=…, a_max=…)` calls used in AlphaFold's bundled code.
-4. **Pins `dm-haiku` to 0.0.12.** ColabFold's extras don't tightly pin haiku; without this, pip installs the latest haiku, which uses `jax.extend.core` symbols missing from JAX 0.4.26.
-5. **Force-reinstalls TensorFlow.** JAX's older bundled cudnn 8.9 (now in place) is what TF was built against; without this step TF's C extensions can be in an inconsistent state from previous installs.
-6. **Clones the repo** and aborts loudly if the clone failed (most common cause: a private repo Colab can't authenticate to).
-7. **Invalidates Python's import cache** so freshly-cloned `aidd.*` modules are findable.
-8. **Verifies the GPU is visible** to JAX in a subprocess (the version `colabfold_batch` will actually use). If you see `CudaDevice(id=0)`, the setup is healthy.
+1. **Installs ColabFold + the bundled AlphaFold** at the pinned commit (`alphafold-minus-jax` extras — we don't touch JAX, ColabFold's deps include the matching `dm-haiku`).
+2. **Adds `tpu-info`** so ColabFold's CPU/GPU/TPU selector takes its tpu-info code path and avoids a stale `import tensorflow as tf` fallback that can fail on cudnn ABI mismatches.
+3. **Creates the symlinks** ColabFold's own notebook does (their convention; harmless on JupyterLab, mandatory in some ColabFold internal paths).
+4. **Removes specific broken TF Lite `.so` files** (their official "hack to fix TF crash"). Cheap and safe.
+5. **Clones the repo** and aborts loudly if the clone failed.
+6. **Invalidates Python's import cache** so freshly-cloned `aidd.*` modules are findable.
+7. **Verifies JAX sees the GPU** in a subprocess (the env `colabfold_batch` will actually use).
 
-Total wall time on a fresh Colab runtime: ~8–12 min.
+Total wall time on a fresh Colab runtime: ~3–5 min.
 """),
 
-        code(title="Setup: install ColabFold + AlphaFold + clone repo (~8–12 min)", source="""
+        code(title="Setup: install ColabFold + clone repo (~3–5 min)", source="""
 import sys
 import importlib
 from pathlib import Path
 
 IS_COLAB = "google.colab" in sys.modules
 
-# ColabFold install pin — see the markdown cell above. Bump this after a verified
-# manual test against the latest ColabFold AlphaFold2.ipynb.
+# ColabFold install pin — update via the procedure described in the markdown above.
 COLABFOLD_COMMIT = "de5ab5f795ed95c70a7a9b6a9dc6bb5625016142"   # ColabFold v1.6.1
-JAX_PIN          = "0.4.26"                                     # last JAX with jnp.clip a_min/a_max
-DM_HAIKU_PIN     = "0.0.12"                                     # matches JAX 0.4.26
 LAST_VERIFIED    = "2026-05-11"
 
 if not IS_COLAB:
@@ -156,34 +154,22 @@ if not IS_COLAB:
     importlib.invalidate_caches()
 else:
     print(f"Installing ColabFold {COLABFOLD_COMMIT[:7]} (verified {LAST_VERIFIED})…")
-    # 1. ColabFold + AlphaFold-internal code (minus JAX) + tpu-info.
+    # 1. ColabFold + the bundled AlphaFold (minus JAX). We deliberately do NOT pin
+    #    JAX / dm-haiku / TF here — ColabFold's official notebook uses Colab's
+    #    default versions on GPU and verified-working as of LAST_VERIFIED.
     !pip install -q --no-warn-conflicts \\
         "colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold@{COLABFOLD_COMMIT}" \\
         tpu-info
-    # 2. Wipe Colab's pre-installed JAX components first. --force-reinstall on the
-    #    target version is not enough — the pre-installed jax-cuda12-plugin is a
-    #    SEPARATE package not named in the install spec, so pip leaves it at its
-    #    (newer) version. That triggers a PJRT API mismatch when JAX 0.4.26 tries
-    #    to talk to a plugin at API 0.76. Explicit uninstall avoids it.
-    !pip uninstall -y jax jaxlib jax-cuda12-plugin jax-cuda12-pjrt jax-cuda12 2>/dev/null
-    # 3. JAX 0.4.26 with CUDA bundled in jaxlib (cuda12_pip extras = no separate
-    #    plugin, no PJRT version negotiation, no mismatch).
-    !pip install -q --no-warn-conflicts --force-reinstall \\
-        "jax[cuda12_pip]=={JAX_PIN}" \\
-        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-    # 4. dm-haiku pinned to match JAX 0.4.26 (newer haiku uses jax.extend.core
-    #    symbols that don't exist in 0.4.26).
-    !pip install -q --no-warn-conflicts --force-reinstall --no-deps "dm-haiku=={DM_HAIKU_PIN}"
-    # 5a. ColabFold's official ".so removal" hack: deletes specific broken TF Lite
-    #     C extensions that don't load against current Colab cudnn. Cheap + safe;
-    #     they ship this in their own AlphaFold2.ipynb. Defence in depth alongside (5b).
+
+    # 2. ColabFold's own symlinks (their hack from AlphaFold2.ipynb).
+    !ln -sf /usr/local/lib/python3.*/dist-packages/colabfold colabfold
+    !ln -sf /usr/local/lib/python3.*/dist-packages/alphafold alphafold
+
+    # 3. ColabFold's official "TF crash fix" — remove specific broken .so files.
     !rm -f /usr/local/lib/python3.*/dist-packages/tensorflow/core/kernels/libtfkernel_sobol_op.so \\
            /usr/local/lib/python3.*/dist-packages/tensorflow/lite/python/*/*.so 2>/dev/null
-    # 5b. Force-reinstall TF (without disturbing CUDA libs) so its main .so files
-    #     relink against whatever cudnn is in place. Belt + braces.
-    !pip install -q --no-warn-conflicts --force-reinstall --no-deps tensorflow
 
-    # 5. Repo. Must be public for unauthenticated clone from Colab.
+    # 4. Repo. Must be public for unauthenticated clone from Colab.
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
         !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
@@ -194,10 +180,10 @@ else:
             "Personal Access Token via Colab Secrets, then re-run this cell."
         )
     sys.path.insert(0, str(REPO_ROOT / "src"))
-    # 6. Re-scan sys.path so freshly-cloned modules are findable.
+    # 5. Re-scan sys.path so freshly-cloned modules are findable.
     importlib.invalidate_caches()
 
-    # 7. Verify GPU visibility in a subprocess (the env colabfold_batch will use).
+    # 6. Verify JAX sees the GPU in a subprocess (the env colabfold_batch will use).
     !python -c "import jax; print('JAX', jax.__version__, '— devices:', jax.devices())"
 
 print()
