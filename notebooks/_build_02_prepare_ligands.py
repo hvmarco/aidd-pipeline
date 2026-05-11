@@ -13,7 +13,7 @@ import sys
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
-from _nb_helpers import code, markdown, notebook, save  # noqa: E402
+from _nb_helpers import AUTORELOAD_SNIPPET, code, markdown, notebook, save  # noqa: E402
 
 NOTEBOOK_PATH = HERE / "02_prepare_ligands.ipynb"
 
@@ -107,6 +107,7 @@ Detect Colab vs local, set the import path, and turn on `%autoreload` so edits t
 
         code("""
 import sys
+import importlib
 from pathlib import Path
 
 IS_COLAB = "google.colab" in sys.modules
@@ -116,19 +117,24 @@ if IS_COLAB:
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
         !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
+    if not (REPO_ROOT / "src" / "aidd").exists():
+        raise RuntimeError(
+            "Repo clone failed (likely cause: the repo is private and Colab cannot "
+            "authenticate). Make github.com/hvmarco/aidd-pipeline public, or use a "
+            "Personal Access Token via Colab Secrets, then re-run this cell."
+        )
     sys.path.insert(0, str(REPO_ROOT / "src"))
+    importlib.invalidate_caches()
 else:
     REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     sys.path.insert(0, str(REPO_ROOT / "src"))
+    importlib.invalidate_caches()
 
 print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
 """),
 
-        code("""
-%load_ext autoreload
-%autoreload 2
-
+        code(AUTORELOAD_SNIPPET + """
 import warnings
 warnings.filterwarnings("ignore")
 

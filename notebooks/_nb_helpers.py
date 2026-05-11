@@ -9,6 +9,11 @@ The builders use these to emit cells in narrative order, e.g.::
         ...
     )
     save(nb, NOTEBOOK_PATH)
+
+Constant ``AUTORELOAD_SNIPPET`` provides a portable replacement for the
+``%load_ext autoreload`` magic that breaks on Python 3.12 + older IPython
+(Colab's current default, as of 2026-05). Paste it at the top of any setup
+code cell that wants autoreload behaviour.
 """
 
 from __future__ import annotations
@@ -55,3 +60,22 @@ def save(nb: nbf.NotebookNode, path: Path) -> None:
     """Write the notebook and print a one-line summary."""
     nbf.write(nb, path)
     print(f"Wrote {path.name} ({len(nb.cells)} cells)")
+
+
+# Portable autoreload loader. Works on any IPython, on any Python version.
+# Background: %load_ext autoreload imports `imp`, which was removed in Python
+# 3.12. Colab's current Python 3.12 + bundled IPython hit this. The wrapper
+# below tries the magic and silently degrades when it can't.
+AUTORELOAD_SNIPPET = """\
+# Auto-reload edits made to src/aidd/ without restarting the kernel.
+# Tolerant wrapper — Colab's Python-3.12 + older IPython removed the `imp` module
+# that the autoreload magic used to import. We silently skip if it can't load.
+from IPython import get_ipython
+_ip = get_ipython()
+if _ip is not None:
+    try:
+        _ip.run_line_magic("load_ext", "autoreload")
+        _ip.run_line_magic("autoreload", "2")
+    except Exception as _e:
+        print(f"autoreload unavailable (skip): {_e}")
+"""

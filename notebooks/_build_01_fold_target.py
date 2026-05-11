@@ -13,7 +13,7 @@ import sys
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
-from _nb_helpers import code, markdown, notebook, save  # noqa: E402
+from _nb_helpers import AUTORELOAD_SNIPPET, code, markdown, notebook, save  # noqa: E402
 
 NOTEBOOK_PATH = HERE / "01_fold_target.ipynb"
 
@@ -97,43 +97,96 @@ What AlphaFold2 does **not** do: predict conformational dynamics, protein–liga
         markdown("""
 ## 1. Setup
 
-This cell detects Colab vs local and refuses to proceed locally — ColabFold's install on non-CUDA systems is not worth the pain. On Colab it installs ColabFold (~5 min) and clones the repo. The `%autoreload` magic lets edits in `src/aidd/` flow through without restarting the kernel.
+### About this install (read once, then forget)
+
+The install commands below **mirror the install pattern of ColabFold's official notebook**, [`AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb), pinned to **ColabFold commit `de5ab5f` (v1.6.1)**, verified working on a fresh Colab T4 runtime on **2026-05-11**.
+
+Why pin to a specific commit? AlphaFold and its surrounding ML libraries (JAX, haiku, alphafold-internal code) require a coherent version set; a single mis-pin upstream cascades into hours of debugging downstream. Pinning gives us **reproducibility** — a reviewer running this notebook in six months sees the same output — and **predictability** — no surprise breakages from upstream changes.
+
+**To update this pin** (recommended every ~3 months):
+1. Visit [`AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb) at the current ColabFold master.
+2. Copy the contents of the install cell.
+3. Diff against the cell below; update the pinned commit + version strings.
+4. Test on a fresh Colab runtime; commit the changes here. The git log becomes the methodological provenance.
+
+### What the cell does
+
+On Colab, in order:
+
+1. **Installs ColabFold + AlphaFold (minus JAX)** at the pinned commit, plus `tpu-info` (skips a broken-on-modern-JAX TPU-detection code path inside ColabFold's CPU/GPU/TPU selector).
+2. **Pins JAX to 0.4.26** with CUDA bundled in `jaxlib` (no separate plugin → no PJRT mismatch). This is the last JAX version that supports the legacy `jnp.clip(a_min=…, a_max=…)` calls used in AlphaFold's bundled code.
+3. **Pins `dm-haiku` to 0.0.12.** ColabFold's extras don't tightly pin haiku; without this, pip installs the latest haiku, which uses `jax.extend.core` symbols missing from JAX 0.4.26.
+4. **Force-reinstalls TensorFlow.** JAX's older bundled cudnn 8.9 (now in place) is what TF was built against; without this step TF's C extensions can be in an inconsistent state from previous installs.
+5. **Clones the repo** and aborts loudly if the clone failed (most common cause: a private repo Colab can't authenticate to).
+6. **Invalidates Python's import cache** so freshly-cloned `aidd.*` modules are findable.
+7. **Verifies the GPU is visible** to JAX in a subprocess (the version `colabfold_batch` will actually use). If you see `CudaDevice(id=0)`, the setup is healthy.
+
+Total wall time on a fresh Colab runtime: ~8–12 min.
 """),
 
         code("""
 import sys
+import importlib
 from pathlib import Path
 
 IS_COLAB = "google.colab" in sys.modules
 
+# ColabFold install pin — see the markdown cell above. Bump this after a verified
+# manual test against the latest ColabFold AlphaFold2.ipynb.
+COLABFOLD_COMMIT = "de5ab5f795ed95c70a7a9b6a9dc6bb5625016142"   # ColabFold v1.6.1
+JAX_PIN          = "0.4.26"                                     # last JAX with jnp.clip a_min/a_max
+DM_HAIKU_PIN     = "0.0.12"                                     # matches JAX 0.4.26
+LAST_VERIFIED    = "2026-05-11"
+
 if not IS_COLAB:
     print(
         "This notebook is meant to run on Google Colab (it needs a GPU for AlphaFold2).\\n"
-        "If you really want to test the parsing/visualisation cells locally without\\n"
-        "running ColabFold, you can use a previously-generated output directory.\\n"
-        "Otherwise, open this notebook in Colab and run it there."
+        "If you only want to test the parsing/visualisation cells locally, place a\\n"
+        "previously-generated ColabFold output directory at\\n"
+        "data/derived/erk2/fold/ and skip §3 (the actual run)."
     )
     REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     sys.path.insert(0, str(REPO_ROOT / "src"))
+    importlib.invalidate_caches()
 else:
-    # Install ColabFold from source (most up-to-date).
-    !pip install -q "colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold"
-    # JAX with CUDA support (matched to Colab's CUDA 12 by default).
-    !pip install -q --upgrade "jax[cuda12_pip]==0.4.26" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-    # Repo (for src/aidd/ helpers + reference data).
+    print(f"Installing ColabFold {COLABFOLD_COMMIT[:7]} (verified {LAST_VERIFIED})…")
+    # 1. ColabFold + AlphaFold-internal code (minus JAX) + tpu-info.
+    !pip install -q --no-warn-conflicts \\
+        "colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold@{COLABFOLD_COMMIT}" \\
+        tpu-info
+    # 2. JAX 0.4.26 with CUDA bundled in jaxlib (avoids PJRT plugin version mismatch).
+    !pip install -q --no-warn-conflicts --force-reinstall \\
+        "jax[cuda12_pip]=={JAX_PIN}" \\
+        -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+    # 3. dm-haiku pinned to match JAX 0.4.26 (newer haiku uses jax.extend.core symbols
+    #    that don't exist in 0.4.26).
+    !pip install -q --no-warn-conflicts --force-reinstall --no-deps "dm-haiku=={DM_HAIKU_PIN}"
+    # 4. TF reinstall to handle cudnn ABI changes from JAX install.
+    !pip install -q --no-warn-conflicts --force-reinstall --no-deps tensorflow
+
+    # 5. Repo. Must be public for unauthenticated clone from Colab.
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
         !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
+    if not (REPO_ROOT / "src" / "aidd").exists():
+        raise RuntimeError(
+            "Repo clone failed (likely cause: the repo is private and Colab cannot "
+            "authenticate). Make github.com/hvmarco/aidd-pipeline public, or use a "
+            "Personal Access Token via Colab Secrets, then re-run this cell."
+        )
     sys.path.insert(0, str(REPO_ROOT / "src"))
+    # 6. Re-scan sys.path so freshly-cloned modules are findable.
+    importlib.invalidate_caches()
 
+    # 7. Verify GPU visibility in a subprocess (the env colabfold_batch will use).
+    !python -c "import jax; print('JAX', jax.__version__, '— devices:', jax.devices())"
+
+print()
 print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
 """),
 
-        code("""
-%load_ext autoreload
-%autoreload 2
-
+        code(AUTORELOAD_SNIPPET + """
 import warnings
 warnings.filterwarnings("ignore")
 
