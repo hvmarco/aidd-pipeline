@@ -2,13 +2,94 @@
 
 End-to-end in-silico screening pipeline for wet-lab triage in cancer drug discovery.
 
-**Status:** scaffolding. The repository layout, planning documents, and pruned course archive are in place; pipeline code is not yet written. See [`_planning/PROJECT_PROPOSAL.md`](_planning/PROJECT_PROPOSAL.md) for the 13-step delivery plan.
+**Status:** 9 of 13 planned steps complete (notebooks 00 / 01 / 02 / 03 built and Colab-verified end-to-end on ERK2; notebook 04 in progress; 05–07 + the production runner planned). See [`_planning/PROJECT_PROPOSAL.md`](_planning/PROJECT_PROPOSAL.md) for the full delivery plan and decisions log.
 
 ## What this is
 
-Given a **protein target** (sequence or PDB) and a **list of candidate ligands** (SMILES), produce a ranked, defensible shortlist of compounds to prioritise in the wet lab. The pipeline runs in Jupyter notebooks (Colab for GPU steps; Windows / macOS locally for CPU steps).
+Given a **protein target** (sequence or PDB, wild-type or mutant) and a **list of candidate ligands** (SMILES), produce a ranked, defensible shortlist of compounds to prioritise in the wet lab. The pipeline runs in Jupyter notebooks (Colab for GPU steps; Windows / macOS locally for CPU steps).
 
-The headline output of a run is `shortlist.sdf` + `shortlist.csv` for a target — ranked candidates, with per-compound docking poses, interaction fingerprints, ADMET flags, and confidence from a two-method consensus.
+The headline output of a run is `shortlist.sdf` + `shortlist.csv` for a target — ranked candidates, with per-compound docking poses, interaction fingerprints, ADMET flags, and confidence from a two-method consensus. The pipeline also supports **drug-resistance / mutation-effect studies** by running against wild-type and mutant variants side-by-side.
+
+## What the pipeline does, step by step
+
+A plain-language tour of each stage. The technical [stack table](#stack-at-a-glance) is below; this section answers *what each step is for*. Each step lives in a numbered notebook under [`notebooks/`](notebooks/).
+
+### 00 — Quickstart (sanity check / demo)
+
+Take a known protein–ligand complex (ERK2 + a co-crystal inhibitor) and compute what's called an **interaction fingerprint** — a record of *which protein residues touch the ligand and what kind of contact they make* (hydrogen bond, hydrophobic packing, π-stacking, etc.). Visualises the binding pocket in 3D. Not part of production runs; proves the building blocks work and teaches the vocabulary.
+
+### 01 — Fold the target
+
+**Input:** a protein sequence (amino-acid string). **Output:** a 3D structure of that protein.
+
+Uses **AlphaFold 2** via [ColabFold](https://github.com/sokrypton/ColabFold) — the neural network that won CASP14 and changed structural biology in 2021. Computes the structure de novo from sequence alone; no crystallography needed.
+
+*Wet-lab analogue:* X-ray crystallography or cryo-EM, but in silico in ~30 min on a Colab GPU.
+
+### 02 — Prepare the ligand library
+
+**Input:** a list of candidate compounds as SMILES strings. **Output:** a clean SDF file of 3D molecules ready to dock.
+
+Per compound: clean and standardise the chemistry, compute drug-likeness descriptors (molecular weight, LogP, etc.), filter out PAINS (compounds known to cause false-positive readouts in assays), and generate a 3D conformer.
+
+*Wet-lab analogue:* triaging a compound collection before spending money testing it — discard the obvious non-drugs first.
+
+### 03 — Dock the ligand library
+
+**Input:** receptor (from 01) + prepared ligands (from 02). **Output:** for each ligand, the best predicted binding pose plus several scores.
+
+Uses **[gnina](https://github.com/gnina/gnina)** — a docker that combines classical Vina-style geometry scoring with a deep-learning model that grades each pose. Includes a *redock sanity check*: re-dock the known co-crystal ligand and confirm it lands within 2 Å of its experimental pose. **PoseBusters** validates that every pose is physically sensible.
+
+*Wet-lab analogue:* a binding assay in silico — predicts how each compound sits in the pocket and how strong the predicted interaction is.
+
+### 04 — Train the per-target ML rescorer
+
+**Input:** the docking scores from 03 + interaction fingerprints + known activity labels for compounds active against this target. **Output:** a trained model + per-compound rescored shortlist.
+
+Trains a machine-learning model (random forest / gradient boosting) to learn *which features of a docked pose actually predict real activity for this specific target*. Raw docking scores are notoriously noisy; the rescorer is custom-trained per target.
+
+*Wet-lab analogue:* building a custom scoring rubric from past hit-finding campaigns and using it to re-rank new candidates.
+
+### 05 — Co-folding via Boltz-2 (the "fast lane")
+
+**Input:** protein sequence + ligand SMILES, in one shot. **Output:** predicted 3D complex *and* affinity score, jointly.
+
+Where steps 01 + 03 fold the protein and then dock the ligand into it as two separate steps, **[Boltz-2](https://github.com/jwohlwend/boltz)** does both at once. This is the open-weights equivalent of AlphaFold 3's co-folding head. The point isn't to replace 01 + 03 — it's to get an **independent second opinion** using completely different methodology.
+
+*Wet-lab analogue:* running the same question through two orthogonal assays (e.g. SPR and DSF) and checking they agree.
+
+### 06 — Consensus shortlist
+
+**Input:** outputs from 04 and 05. **Output:** the final ranked shortlist (`shortlist.sdf` + `shortlist.csv`).
+
+Keeps only the compounds where *both* methods (gnina + ML rescorer **and** Boltz-2 affinity) rank highly. The consensus filter removes single-method false positives — a compound has to convince two independent in-silico assays before it gets on the wet-lab list.
+
+*Wet-lab analogue:* combining two assay readouts so the wet lab focuses on the strongest dual-evidence candidates.
+
+### 07 — Mutation analysis
+
+**Input:** two completed pipeline runs — one on wild-type, one on a mutant variant. **Output:** side-by-side comparison.
+
+Tells you how the mutation reshaped the binding pocket, which interactions are gained / lost, which compounds drop out of the shortlist, and which new ones appear. The whole point in cancer drug discovery: **drug-resistance studies** — EGFR T790M (osimertinib resistance), BRAF V600E, KIT D816V, and so on.
+
+*Wet-lab analogue:* testing your inhibitor panel against a known resistance-mutation construct.
+
+### 99 — Production runner
+
+The single notebook for routine use once the methodology is established. Chains 01 → 06 (and 07 per mutant) into one click-and-run. Tighter teaching content than 00–07 — it's the audited version reviewers and funders read. Includes an optional AlphaFold-3 toggle (academic-access only, off by default; see [§9 of the proposal](_planning/PROJECT_PROPOSAL.md)).
+
+*Wet-lab analogue:* the lab's SOP — same protocol, applied to whatever target + library you give it.
+
+## The whole flow in one diagram
+
+```
+target sequence ──► 01 fold ──┐
+                              ├──► 03 dock ──► 04 ML rescore ──┐
+SMILES library ──► 02 prep ───┤                                ├──► 06 consensus ──► shortlist.sdf
+                              └──► 05 Boltz-2 co-fold + score ─┘
+
+                              (07 mutation_analysis diffs WT-run vs mutant-run)
+```
 
 ## Stack at a glance
 
@@ -49,21 +130,25 @@ See [`_planning/CONSULTANT_REVIEW.md`](_planning/CONSULTANT_REVIEW.md) for why t
 └── _archive/                       # pruned Leiden/ULLA course materials, read-only references
 ```
 
-## Quick start (local)
+## Quick start
 
-Will be filled in once `environment.yml` is validated end-to-end. Skeleton:
+**Run a notebook on Colab (recommended for first time):** click the *Open in Colab* badge at the top of any notebook in [`notebooks/`](notebooks/), or follow the per-notebook links from [`notebooks/README.md`](notebooks/README.md). The setup cell handles installs and clones the repo automatically.
+
+**Run locally (CPU-only notebooks):**
 
 ```bash
-# 1. Create the conda environment
+# 1. Create the conda environment (validated on Windows 11 + macOS + Linux)
 mamba env create -f environment.yml
 mamba activate aidd
 
-# 2. Smoke test
+# 2. Smoke-test the install
 python -c "import rdkit, prolif, posebusters, datamol; print('ok')"
 
 # 3. Launch Jupyter
 jupyter lab
 ```
+
+GPU-bound notebooks (01 fold, 03 dock, 05 co-fold) run only on Colab. CPU notebooks (00, 02, 04, 06, 07) run on either Colab or your laptop.
 
 ## For collaborators / for Claude
 
