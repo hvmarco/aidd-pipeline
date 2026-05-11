@@ -92,12 +92,13 @@ def show_interactions_3d(
     pose_index: int = 0,
     radius: float = 0.15,
     dashed: bool = True,
+    skip_types: tuple[str, ...] = ("VdWContact",),
 ) -> py3Dmol.view:
     """Overlay coloured interaction lines onto a py3Dmol view.
 
     Reads atom indices from ``fp.ifp[pose_index]`` and draws one cylinder per
-    detected interaction, coloured by ``INTERACTION_COLORS``. Falls back to
-    grey for any interaction type not in the colour map.
+    detected interaction, coloured by ``INTERACTION_COLORS``. Unknown
+    interaction types are drawn in grey.
 
     Parameters
     ----------
@@ -108,32 +109,43 @@ def show_interactions_3d(
         per-atom coordinates).
     pose_index
         Which pose to visualise when the ligand had multiple conformations.
+    skip_types
+        Interaction types to omit from the overlay. ``"VdWContact"`` is excluded
+        by default because every binding-site residue typically has one, which
+        clutters the view; pass ``skip_types=()`` to draw them.
     """
-    pose_interactions = fp.ifp[pose_index]
+    pose = fp.ifp[pose_index]
 
     seen_residues: set[str] = set()
-    for (lig_resid, prot_resid, interaction_type), data_list in pose_interactions.items():
+    for (lig_resid, prot_resid), interaction_dict in pose.items():
         residue_num = re.sub(r"\D", "", str(prot_resid))
         if residue_num and residue_num not in seen_residues:
             view.setStyle({"resi": residue_num}, {"stick": {"colorscheme": "goldCarbon"}})
             seen_residues.add(residue_num)
 
-        for entry in data_list:
-            lig_idx = entry["indices"]["ligand"][0]
-            prot_idx = entry["indices"]["protein"][0]
-            p1 = ligand_plf.GetConformer().GetAtomPosition(lig_idx)
-            p2 = protein_plf[prot_resid].GetConformer().GetAtomPosition(prot_idx)
-            view.addCylinder(
-                {
-                    "start": {"x": p1.x, "y": p1.y, "z": p1.z},
-                    "end": {"x": p2.x, "y": p2.y, "z": p2.z},
-                    "color": INTERACTION_COLORS.get(interaction_type, "grey"),
-                    "radius": radius,
-                    "dashed": dashed,
-                    "fromCap": 1,
-                    "toCap": 1,
-                }
-            )
+        protein_residue_conf = protein_plf[prot_resid].GetConformer()
+        ligand_conf = ligand_plf.GetConformer()
+
+        for interaction_type, entries in interaction_dict.items():
+            if interaction_type in skip_types:
+                continue
+            color = INTERACTION_COLORS.get(interaction_type, "grey")
+            for entry in entries:
+                lig_idx = entry["indices"]["ligand"][0]
+                prot_idx = entry["indices"]["protein"][0]
+                p1 = ligand_conf.GetAtomPosition(lig_idx)
+                p2 = protein_residue_conf.GetAtomPosition(prot_idx)
+                view.addCylinder(
+                    {
+                        "start": {"x": p1.x, "y": p1.y, "z": p1.z},
+                        "end": {"x": p2.x, "y": p2.y, "z": p2.z},
+                        "color": color,
+                        "radius": radius,
+                        "dashed": dashed,
+                        "fromCap": 1,
+                        "toCap": 1,
+                    }
+                )
     return view
 
 
