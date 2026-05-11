@@ -19,11 +19,16 @@ NOTEBOOK_PATH = HERE / "01_fold_target.ipynb"
 
 
 def build() -> None:
+    # accelerator + gpu_type cause Colab to open this notebook with T4 GPU
+    # pre-selected — mirrors ColabFold's AlphaFold2.ipynb metadata so reviewers /
+    # users don't have to remember to switch the runtime before running cell 1.
     nb = notebook(
         markdown("""
 # 01 — Fold a target protein with ColabFold / AlphaFold2
 
 **aidd-pipeline · Notebook 1 of the screening workflow**
+
+> **Upstream reference:** This notebook is an adapted, pinned version of [`ColabFold/AlphaFold2.ipynb`](https://github.com/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb) (a.k.a. the official ColabFold AlphaFold2 notebook). For the canonical, always-current ColabFold notebook open the link directly: [Open in Colab ↗](https://colab.research.google.com/github/sokrypton/ColabFold/blob/main/AlphaFold2.ipynb). Our version differs in three ways: (1) the install is pinned to a specific ColabFold commit for reproducibility, (2) we wrap the call to `colabfold_batch` in a thinner orchestration so the output is picked up by the rest of *this* pipeline, (3) the markdown is rewritten for our pedagogical conventions.
 
 When you do not have an experimental 3-D structure of your target — and even when you do, but it lacks a part of the sequence, contains a mutation you care about, or is a homolog rather than your actual construct — you predict the structure from the amino-acid sequence. The state of the art for that since 2021 is **AlphaFold2 (AF2)**, run via the community wrapper **ColabFold**.
 
@@ -114,17 +119,18 @@ Why pin to a specific commit? AlphaFold and its surrounding ML libraries (JAX, h
 On Colab, in order:
 
 1. **Installs ColabFold + AlphaFold (minus JAX)** at the pinned commit, plus `tpu-info` (skips a broken-on-modern-JAX TPU-detection code path inside ColabFold's CPU/GPU/TPU selector).
-2. **Pins JAX to 0.4.26** with CUDA bundled in `jaxlib` (no separate plugin → no PJRT mismatch). This is the last JAX version that supports the legacy `jnp.clip(a_min=…, a_max=…)` calls used in AlphaFold's bundled code.
-3. **Pins `dm-haiku` to 0.0.12.** ColabFold's extras don't tightly pin haiku; without this, pip installs the latest haiku, which uses `jax.extend.core` symbols missing from JAX 0.4.26.
-4. **Force-reinstalls TensorFlow.** JAX's older bundled cudnn 8.9 (now in place) is what TF was built against; without this step TF's C extensions can be in an inconsistent state from previous installs.
-5. **Clones the repo** and aborts loudly if the clone failed (most common cause: a private repo Colab can't authenticate to).
-6. **Invalidates Python's import cache** so freshly-cloned `aidd.*` modules are findable.
-7. **Verifies the GPU is visible** to JAX in a subprocess (the version `colabfold_batch` will actually use). If you see `CudaDevice(id=0)`, the setup is healthy.
+2. **Wipes Colab's pre-installed JAX components** (`jax`, `jaxlib`, and the separate `jax-cuda12-plugin` / `-pjrt` packages). The separate plugin packages aren't named in our JAX install spec, so `--force-reinstall` doesn't downgrade them — leaving them in place causes a PJRT API version mismatch at runtime.
+3. **Pins JAX to 0.4.26** with CUDA bundled in `jaxlib` (the `cuda12_pip` extras — no separate plugin, no PJRT negotiation, no mismatch). This is also the last JAX version that supports the legacy `jnp.clip(a_min=…, a_max=…)` calls used in AlphaFold's bundled code.
+4. **Pins `dm-haiku` to 0.0.12.** ColabFold's extras don't tightly pin haiku; without this, pip installs the latest haiku, which uses `jax.extend.core` symbols missing from JAX 0.4.26.
+5. **Force-reinstalls TensorFlow.** JAX's older bundled cudnn 8.9 (now in place) is what TF was built against; without this step TF's C extensions can be in an inconsistent state from previous installs.
+6. **Clones the repo** and aborts loudly if the clone failed (most common cause: a private repo Colab can't authenticate to).
+7. **Invalidates Python's import cache** so freshly-cloned `aidd.*` modules are findable.
+8. **Verifies the GPU is visible** to JAX in a subprocess (the version `colabfold_batch` will actually use). If you see `CudaDevice(id=0)`, the setup is healthy.
 
 Total wall time on a fresh Colab runtime: ~8–12 min.
 """),
 
-        code("""
+        code(title="Setup: install ColabFold + AlphaFold + clone repo (~8–12 min)", source="""
 import sys
 import importlib
 from pathlib import Path
@@ -154,14 +160,27 @@ else:
     !pip install -q --no-warn-conflicts \\
         "colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold@{COLABFOLD_COMMIT}" \\
         tpu-info
-    # 2. JAX 0.4.26 with CUDA bundled in jaxlib (avoids PJRT plugin version mismatch).
+    # 2. Wipe Colab's pre-installed JAX components first. --force-reinstall on the
+    #    target version is not enough — the pre-installed jax-cuda12-plugin is a
+    #    SEPARATE package not named in the install spec, so pip leaves it at its
+    #    (newer) version. That triggers a PJRT API mismatch when JAX 0.4.26 tries
+    #    to talk to a plugin at API 0.76. Explicit uninstall avoids it.
+    !pip uninstall -y jax jaxlib jax-cuda12-plugin jax-cuda12-pjrt jax-cuda12 2>/dev/null
+    # 3. JAX 0.4.26 with CUDA bundled in jaxlib (cuda12_pip extras = no separate
+    #    plugin, no PJRT version negotiation, no mismatch).
     !pip install -q --no-warn-conflicts --force-reinstall \\
         "jax[cuda12_pip]=={JAX_PIN}" \\
         -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-    # 3. dm-haiku pinned to match JAX 0.4.26 (newer haiku uses jax.extend.core symbols
-    #    that don't exist in 0.4.26).
+    # 4. dm-haiku pinned to match JAX 0.4.26 (newer haiku uses jax.extend.core
+    #    symbols that don't exist in 0.4.26).
     !pip install -q --no-warn-conflicts --force-reinstall --no-deps "dm-haiku=={DM_HAIKU_PIN}"
-    # 4. TF reinstall to handle cudnn ABI changes from JAX install.
+    # 5a. ColabFold's official ".so removal" hack: deletes specific broken TF Lite
+    #     C extensions that don't load against current Colab cudnn. Cheap + safe;
+    #     they ship this in their own AlphaFold2.ipynb. Defence in depth alongside (5b).
+    !rm -f /usr/local/lib/python3.*/dist-packages/tensorflow/core/kernels/libtfkernel_sobol_op.so \\
+           /usr/local/lib/python3.*/dist-packages/tensorflow/lite/python/*/*.so 2>/dev/null
+    # 5b. Force-reinstall TF (without disturbing CUDA libs) so its main .so files
+    #     relink against whatever cudnn is in place. Belt + braces.
     !pip install -q --no-warn-conflicts --force-reinstall --no-deps tensorflow
 
     # 5. Repo. Must be public for unauthenticated clone from Colab.
@@ -186,7 +205,7 @@ print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
 """),
 
-        code(AUTORELOAD_SNIPPET + """
+        code(title="Imports", source=AUTORELOAD_SNIPPET + """
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -215,7 +234,7 @@ If you have a UniProt accession but not the raw sequence, you can fetch it with 
 **Sequence length matters:** AlphaFold2's memory grows roughly as O(N²) in sequence length. Up to ~1200 residues runs comfortably on a Colab T4; longer sequences may need an A100 or a careful chunking strategy. The example below (360 aa) is well within free-tier limits.
 """),
 
-        code("""
+        code(title="Inputs: target name, sequence, output directory", source="""
 # Default: human ERK2 (MAPK1), UniProt P28482.
 TARGET_NAME = "erk2"
 SEQUENCE = (
@@ -258,7 +277,7 @@ The cell below uses `--num-models 5` (the standard), `--msa-mode mmseqs2_uniref_
 **This is the long-running step (~30 min).** Don't navigate away from the Colab tab; Colab's idle-disconnect timeout will kill the runtime. If you have Colab Pro, set the runtime to "Background execution" for safety.
 """),
 
-        code("""
+        code(title="Run ColabFold (~25–30 min on T4 — the long step)", source="""
 if IS_COLAB:
     # The full command. Run from the notebook so we can capture its output.
     !colabfold_batch \\
@@ -286,7 +305,7 @@ ColabFold writes ~30 files to the output directory:
 The `parse_colabfold_ranking` helper in `aidd.folding` reads the directory and gives us a tidy table.
 """),
 
-        code("""
+        code(title="Parse ColabFold output → ranking DataFrame", source="""
 ranking = parse_colabfold_ranking(OUTPUT_DIR, name=TARGET_NAME)
 ranking
 """),
@@ -314,7 +333,7 @@ A single overall pLDDT is a useful summary, but the **per-residue plot** is more
 - **A sudden mid-chain drop in pLDDT** can indicate a flexible / mis-predicted loop, or a multi-domain protein where the relative orientation of two domains is uncertain.
 """),
 
-        code("""
+        code(title="pLDDT summary stats for the best model", source="""
 best_pdb = best_model_path(OUTPUT_DIR, name=TARGET_NAME)
 plddt = extract_plddt(best_pdb)
 summary = plddt_summary(plddt)
@@ -330,7 +349,7 @@ for k, v in summary.items():
         print(f"  {label:>20}: {v}")
 """),
 
-        code("""
+        code(title="Plot pLDDT per residue", source="""
 fig, ax = plt.subplots(figsize=(11, 3.5))
 ax.fill_between(plddt.index, plddt.values, alpha=0.25, color="steelblue")
 ax.plot(plddt.index, plddt.values, lw=0.9, color="steelblue")
@@ -373,7 +392,7 @@ The 3-D viewer below uses the same colour code as the AlphaFold Database web vie
 Drag to rotate, scroll to zoom. The "blue core, orange tails" pattern that is characteristic of soluble proteins is the visual signature of a well-predicted single-domain fold.
 """),
 
-        code("""
+        code(title="3-D viewer: structure coloured by pLDDT", source="""
 view = show_structure_colored_by_plddt(best_pdb)
 view.show()
 """),
@@ -390,7 +409,7 @@ The comparison is **Cα-RMSD** after rigid superposition. < 2 Å between two AF 
 > *Note:* This comparison only works when both structures have the same number of residues. X-ray structures often omit flexible termini that AF predicts in full, in which case the comparison needs a sequence alignment first — beyond what this notebook does. We will skip the comparison gracefully when lengths differ.
 """),
 
-        code("""
+        code(title="Compare to a reference structure (optional)", source="""
 REF_PDB = REPO_ROOT / "data" / "structures" / "erk2_af.pdb"
 
 if REF_PDB.exists():
@@ -418,7 +437,7 @@ else:
 The docking notebook (`03_dock_gnina`) expects the receptor at `data/derived/<target>/fold/<target>_best.pdb`. We copy the rank-1 prediction to that canonical location so the pipeline finds it without having to know the ColabFold-style filename. Per-residue pLDDT lives in the B-factor column and travels with the file.
 """),
 
-        code("""
+        code(title="Save the best model as <target>_best.pdb for downstream notebooks", source="""
 import shutil
 
 canonical = OUTPUT_DIR / f"{TARGET_NAME}_best.pdb"
@@ -450,6 +469,8 @@ ColabFold's CLI does the heavy lifting; our `src/aidd/{folding,structures,viz}.p
 - Tunyasuvunakool et al., *Nature* (2021) — the original release of AF predictions for the human proteome; useful context on what "well-predicted" means in practice. [doi:10.1038/s41586-021-03828-1](https://doi.org/10.1038/s41586-021-03828-1)
 - AlphaFold Database, [alphafold.ebi.ac.uk](https://alphafold.ebi.ac.uk/) — pre-computed models for most well-studied proteins; often you can fetch one from here instead of running ColabFold yourself.
 """),
+        accelerator="GPU",
+        gpu_type="T4",
     )
     save(nb, NOTEBOOK_PATH)
 

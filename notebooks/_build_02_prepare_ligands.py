@@ -105,7 +105,7 @@ One caveat: these filters are heuristics, not laws. There are FDA-approved drugs
 Detect Colab vs local, set the import path, and turn on `%autoreload` so edits to `src/aidd/` propagate without restarting the kernel.
 """),
 
-        code("""
+        code(title="Setup: detect Colab vs local, install pip extras, clone repo", source="""
 import sys
 import importlib
 from pathlib import Path
@@ -134,7 +134,7 @@ print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
 """),
 
-        code(AUTORELOAD_SNIPPET + """
+        code(title="Imports", source=AUTORELOAD_SNIPPET + """
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -180,7 +180,7 @@ We set two key parameters:
 | **Plain Python script** (any OS) | `os.cpu_count()` | No Jupyter weirdness. Use the script template in the recap. |
 """),
 
-        code("""
+        code(title="Inputs: SMILES file, labels, output path + run parameters", source="""
 INPUT_SMI = REPO_ROOT / "data" / "compounds" / "erk2" / "training_small.smi"
 LABELS    = REPO_ROOT / "data" / "labels" / "erk2_training.tsv"
 OUTPUT_SDF = REPO_ROOT / "data" / "derived" / "erk2" / "ligands_prepared.sdf"
@@ -194,7 +194,7 @@ print(f"Output:    {OUTPUT_SDF.relative_to(REPO_ROOT)}")
 print(f"N_WORKERS: {N_WORKERS}  ({'Colab Linux' if IS_COLAB else 'local'})")
 """),
 
-        code("""
+        code(title="Read SMILES file → DataFrame", source="""
 df_in = read_smiles(INPUT_SMI)
 print(f"Loaded {len(df_in):,} compounds")
 df_in.head()
@@ -235,7 +235,7 @@ The function `prepare_library` runs six steps on every compound, with a progress
 If any step fails (parse, standardise, embed), the row is marked `ok = False` with a `fail_reason` explaining which step. We carry the failures through to the end so we can audit them.
 """),
 
-        code("""
+        code(title="Run the prep pipeline (standardise → properties → PAINS → 3-D embed)", source="""
 df_subset = df_in.sample(n=min(SAMPLE_N, len(df_in)), random_state=42).reset_index(drop=True) if SAMPLE_N else df_in
 print(f"Preparing {len(df_subset):,} compounds…")
 
@@ -261,7 +261,7 @@ What you want to see for a *general* library: a roughly bell-shaped distribution
 What is *suspicious*: a heavy right tail in MW or LogP (probably non-drug-like chemistry; vendor catalogues sometimes contain colour pigments or polymers). Many zeros in HBD/HBA (likely fragments rather than drug-sized molecules).
 """),
 
-        code("""
+        code(title="Property distributions (MW / LogP / HBD / HBA / TPSA / QED)", source="""
 ok = df[df["ok"]].copy()
 
 fig, axes = plt.subplots(2, 3, figsize=(13, 7))
@@ -302,7 +302,7 @@ These come from analyses of marketed drugs, not from first principles. They are 
 ## 5. How many compounds pass each gate?
 """),
 
-        code("""
+        code(title="Pass-rate table per gate (Lipinski / Veber / QED / PAINS)", source="""
 rates = {
     "Standardise + 3D embed": df["ok"].mean(),
     "Lipinski (Ro5) pass":    ok["lipinski_pass"].mean(),
@@ -331,7 +331,7 @@ On a real-world drug-discovery library you should see roughly:
 If your pass rates are far outside these ranges, look at the library composition before trusting downstream results.
 """),
 
-        code("""
+        code(title="Top PAINS substructure matches", source="""
 # Most common PAINS substructures hit, if any
 pains_hits = ok.loc[ok["pains"] != "", "pains"].value_counts().head(10)
 if len(pains_hits):
@@ -364,7 +364,7 @@ A 3-D structure is the *output* of this notebook — it is what gets fed into do
 If a conformer looks pathological, the docking pose will inherit those problems.
 """),
 
-        code("""
+        code(title="3-D viewer: highest-QED PAINS-clean compound", source="""
 pick = ok[(ok["pains"] == "") & ok["lipinski_pass"]].sort_values("qed", ascending=False).head(1)
 mol = pick.iloc[0]["mol"]
 print(f"Showing {pick.iloc[0]['name'] or 'compound'}  —  QED {pick.iloc[0]['qed']:.2f}, MW {pick.iloc[0]['mw']:.0f}")
@@ -386,7 +386,7 @@ A common pitfall: a drug-likeness gate may filter out *more actives than inactiv
 If both rates are similar, the gate is target-agnostic. If actives drop noticeably more than inactives, consider relaxing the gate or using a target-aware filter.
 """),
 
-        code(r"""
+        code(title="Cross-reference: gate pass rate by activity label (sanity check)", source=r"""
 if LABELS.exists():
     labels = pd.read_csv(LABELS, sep=r"\s+")
     labels["CPD_ID"] = labels["CPD_ID"].astype(str)
@@ -431,7 +431,7 @@ A pass-rate gap of more than ~10 percentage points between actives and inactives
 We deliberately only write the gate-passing molecules. The full DataFrame (failures included) is still in memory if you want to dig into the rejects.
 """),
 
-        code("""
+        code(title="Write the prepared library to SDF", source="""
 passing = ok[
     ok["lipinski_pass"] & ok["veber_pass"] & ok["qed_pass"] & (ok["pains"] == "")
 ].copy()

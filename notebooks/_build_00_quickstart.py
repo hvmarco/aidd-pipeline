@@ -95,7 +95,7 @@ Every approved kinase inhibitor binds at — or close to — the **ATP-binding p
 Two cells: one detects whether we're on Google Colab vs a local machine and sets the import path; the other imports the libraries we will use. The `%autoreload` magic means edits to `src/aidd/*.py` are picked up without restarting the kernel — useful when iterating.
 """),
 
-        code("""
+        code(title="Setup: detect Colab vs local, install pip extras, clone repo", source="""
 import sys
 import importlib
 from pathlib import Path
@@ -127,7 +127,7 @@ print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
 """),
 
-        code(AUTORELOAD_SNIPPET + """
+        code(title="Imports", source=AUTORELOAD_SNIPPET + """
 import warnings
 warnings.filterwarnings("ignore")  # ProLIF/RDKit/MDAnalysis are chatty
 
@@ -157,7 +157,7 @@ We work with two files:
 Throughout this notebook we will treat E94 as if it were a candidate compound and compute its interaction fingerprint. The exercise is meaningful because, in later notebooks, we will *redock* the same molecule and compare against the experimental pose to confirm our docking workflow works.
 """),
 
-        code("""
+        code(title="Inputs: ERK2 / 4FV7 receptor + reference ligand paths", source="""
 PROTEIN = REPO_ROOT / "data" / "structures" / "erk2_4fv7.pdb"
 LIGAND  = REPO_ROOT / "data" / "ligands"    / "erk2_4fv7_ref.pdb"
 LIGAND_RESNAME = "E94"  # PDB three-letter code for the 4FV7 co-crystal ligand
@@ -194,7 +194,7 @@ Two ligands that score similarly by raw docking energy may still differ in *whic
 Compute the IFP. The function takes the protein PDB and the ligand PDB and returns a `pandas` DataFrame:
 """),
 
-        code("""
+        code(title="Compute the interaction fingerprint", source="""
 ifp_df = compute_ifp(PROTEIN, LIGAND)
 print(f"Shape: {ifp_df.shape}  —  one row per pose, columns = (ligand_residue, protein_residue, interaction_type)")
 ifp_df
@@ -210,7 +210,7 @@ ifp_df
 The `to_wide_features` function below flattens the table into one column per *(residue, interaction)* combination, which is the format machine-learning libraries expect.
 """),
 
-        code("""
+        code(title="Flatten the IFP into one row per pose (ML-ready features)", source="""
 wide = to_wide_features(ifp_df)
 print(f"{wide.shape[1]} features after flattening")
 wide
@@ -238,7 +238,7 @@ Visual conventions used here (and throughout the pipeline):
 - The viewer is rendered by [py3Dmol](https://3dmol.org/), which works the same in JupyterLab, VS Code, and Google Colab.
 """),
 
-        code("""
+        code(title="3-D viewer: protein cartoon + ligand sticks", source="""
 view = show_protein_ligand(PROTEIN, LIGAND, ligand_resname=LIGAND_RESNAME)
 view.zoomTo({"resn": LIGAND_RESNAME})
 view.show()
@@ -262,7 +262,7 @@ A useful trick is to colour, as sticks, every protein residue whose any atom sit
 The residues that show up here are the ones our IFP also picked up — visual cross-check.
 """),
 
-        code("""
+        code(title="3-D viewer + binding-site residues highlighted", source="""
 view = show_protein_ligand(PROTEIN, LIGAND, ligand_resname=LIGAND_RESNAME)
 show_binding_site(view, ligand_resname=LIGAND_RESNAME, radius=5.0)
 view.zoomTo({"resn": LIGAND_RESNAME})
@@ -283,7 +283,7 @@ The residues now drawn as gold sticks line the pocket. Hover with your mouse —
 A 3-D view is great for getting a feel, but it's hard to compare across many ligands by eye. The **LigNetwork** diagram flattens the same information onto a 2-D page: the ligand structure sits in the centre, and each interacting residue radiates outward, connected by a coloured line that encodes the interaction type. It's the diagram you'll often see in medicinal-chemistry papers when authors describe "key interactions" of a new compound.
 """),
 
-        code("""
+        code(title="2-D interaction network (ProLIF LigNetwork)", source="""
 # Re-build the fingerprint object (we need it, not just the DataFrame, for LigNetwork)
 protein_plf = load_plf_molecule(PROTEIN)
 ligand_plf  = load_plf_molecule(LIGAND)
@@ -315,7 +315,7 @@ The final figure layers the IFP back onto the 3-D viewer: for every detected int
 By default we **hide van der Waals contacts** because almost every binding-site residue has at least one VdW contact and the view becomes a wire cage. The chemically discriminating interactions (hydrogen bonds, hydrophobic packing, π-stacking) remain. Pass `skip_types=()` if you want VdW back in.
 """),
 
-        code("""
+        code(title="3-D viewer with interaction overlay (coloured cylinders)", source="""
 view = show_protein_ligand(PROTEIN, LIGAND, ligand_resname=LIGAND_RESNAME)
 show_interactions_3d(view, fp, protein_plf, ligand_plf, pose_index=0)
 view.zoomTo({"resn": LIGAND_RESNAME})

@@ -32,17 +32,37 @@ def markdown(source: str) -> nbf.NotebookNode:
     return nbf.v4.new_markdown_cell(source.strip("\n"))
 
 
-def code(source: str) -> nbf.NotebookNode:
-    """Create a code cell from a multi-line string."""
-    return nbf.v4.new_code_cell(source.strip("\n"))
+def code(source: str, title: str | None = None) -> nbf.NotebookNode:
+    """Create a code cell from a multi-line string.
+
+    If ``title`` is provided, a ``#@title <title>`` comment is prepended. On
+    Colab this turns the cell into a labelled collapsible block visible in the
+    notebook outline; on JupyterLab / VS Code it is just a plain comment. Use
+    short titles ("Setup", "Inputs", "Run ColabFold", etc.) so the outline
+    reads as a table of contents.
+    """
+    body = source.strip("\n")
+    if title is not None:
+        body = f"#@title {title}\n{body}"
+    return nbf.v4.new_code_cell(body)
 
 
 def notebook(
     *cells: nbf.NotebookNode,
     kernel_display_name: str = "aidd",
     python_version: str = "3.11",
+    accelerator: str | None = None,
+    gpu_type: str | None = None,
 ) -> nbf.NotebookNode:
-    """Assemble cells into a notebook with our standard metadata."""
+    """Assemble cells into a notebook with our standard metadata.
+
+    ``accelerator`` and ``gpu_type`` let GPU-specific notebooks request a
+    Colab runtime by default. Set ``accelerator="GPU"`` and ``gpu_type="T4"``
+    on the folding / Boltz-2 / docking notebooks; leave both unset for the
+    CPU-only notebooks. The fields mirror ColabFold's AlphaFold2.ipynb
+    metadata so the runtime is pre-selected the moment the notebook opens
+    on Colab.
+    """
     nb = nbf.v4.new_notebook()
     nb.cells = list(cells)
     nb.metadata = {
@@ -53,6 +73,10 @@ def notebook(
         },
         "language_info": {"name": "python", "version": python_version},
     }
+    if accelerator is not None:
+        nb.metadata["accelerator"] = accelerator
+    if gpu_type is not None:
+        nb.metadata.setdefault("colab", {})["gpuType"] = gpu_type
     return nb
 
 
