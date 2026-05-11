@@ -305,13 +305,25 @@ _GNINA_PROP_KEYS = ("minimizedAffinity", "CNNscore", "CNNaffinity", "CNN_VS", "m
 def parse_poses_sdf(path: PathLike) -> pd.DataFrame:
     """Read a gnina-output SDF; one row per pose.
 
-    gnina writes the following SD tags on every pose:
+    gnina writes SD tags on every pose. The ones we extract:
 
     - ``minimizedAffinity``  — Vina/smina affinity in kcal/mol (lower = stronger).
+                               Always present.
     - ``CNNscore``           — CNN classification score, 0–1 (higher = better).
+                               Always present when ``--cnn_scoring`` ≠ ``none``.
     - ``CNNaffinity``        — CNN-predicted affinity in pK_d (higher = stronger).
+                               Always present when ``--cnn_scoring`` ≠ ``none``.
     - ``CNN_VS``             — combined virtual-screening score (higher = better).
-    - ``minimizedRMSD``      — RMSD between the docked and the gnina-minimised pose.
+                               Always present when ``--cnn_scoring`` ≠ ``none``.
+    - ``minimizedRMSD``      — RMSD between the input pose and gnina's
+                               iteratively-minimised pose. **Only emitted under
+                               ``--cnn_scoring refinement`` or ``--cnn_scoring all``
+                               (the CNN-guided iterative-refinement modes). Under
+                               the default ``--cnn_scoring rescore`` (Vina docks +
+                               CNN scores once at the end, no refinement), gnina
+                               does not write this tag and the column is None for
+                               every row.** Not a bug — a consequence of the speed /
+                               accuracy trade-off we chose.
 
     The returned DataFrame has the columns above (renamed to snake_case),
     plus ``compound_id`` (the SDF ``_Name``) and ``pose_rank`` (1-based, per

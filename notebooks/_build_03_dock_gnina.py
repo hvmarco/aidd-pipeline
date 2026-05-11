@@ -470,7 +470,7 @@ One row per pose; multiple poses per compound. The score columns:
 - **`cnn_score`** — gnina's CNN classification score for "this looks like a real binding pose", in 0–1. **Higher = better.** Trained on PDBbind positive / decoy pairs.
 - **`cnn_affinity`** — CNN-predicted binding affinity in **pK_d** (i.e. `−log10(K_d)`). **Higher = stronger.** Typical drugs: 6–10. Sub-micromolar binders score ≥ 6.
 - **`cnn_vs`** — combined virtual-screening score (`cnn_score × cnn_affinity`); good for ranking across compounds.
-- **`minimized_rmsd`** — how much gnina moved the pose during its minimisation step. Large values (>2 Å) suggest the initial pose was strained.
+- **`minimized_rmsd`** — RMSD between the input pose and gnina's iteratively-refined pose. Only populated under `--cnn_scoring refinement` or `--cnn_scoring all` (the CNN-guided refinement modes). We use `rescore` here (Vina docks + CNN scores once at the end, no refinement), which is faster and standard for first-pass triage — so this column is `None` for every row. Switch to `refinement` mode if you want these values; it costs ~2–5× the wall time per compound.
 - **`pose_rank`** — 1 = gnina's top pick for that compound. Subsequent ranks are alternative binding modes the docker considered, ordered by score.
 
 A common starting view is to keep only the top-1 pose per compound:
@@ -567,22 +567,40 @@ Compounds with all top-`NUM_MODES` poses failing should be dropped before downst
 """),
 
         code(title="Merge PoseBusters flags into the gnina score table", source="""
-# PoseBusters' index is (file, mol_idx). We align on the order gnina wrote.
+# PoseBusters returns one row per pose in the order gnina wrote them to
+# poses.sdf, which is the same order as the rows in `scores`. We align by
+# index position. Length-check first so any future drift surfaces loudly.
 scores_qc = scores.reset_index(drop=True).copy()
 pb_aligned = pb_df.reset_index(drop=True)
+assert len(scores_qc) == len(pb_aligned), (
+    f"row count mismatch: gnina has {len(scores_qc)} poses, "
+    f"PoseBusters has {len(pb_aligned)} rows. The merge would be wrong; "
+    "check whether PoseBusters was given the same SDF the scores were parsed from."
+)
+assert "pb_passes_all" in pb_aligned.columns, (
+    "pb_passes_all column missing from PoseBusters output. Did the bool-column "
+    "detection in run_posebusters fail? Check pb_df.dtypes."
+)
 
-# Bring in the headline columns.
-for col in ("pb_passes_all", "first_failing"):
-    if col in pb_aligned.columns:
-        scores_qc[col] = pb_aligned[col].values[: len(scores_qc)]
+# Cast to numpy bool / str so dtype-flip surprises (e.g. object-dtype bool
+# Series that don't AND together correctly) can't bite us downstream.
+scores_qc["pb_passes_all"] = pb_aligned["pb_passes_all"].to_numpy(dtype=bool)
+if "first_failing" in pb_aligned.columns:
+    scores_qc["first_failing"] = pb_aligned["first_failing"].astype(str).to_numpy()
 
-# Top-1, PoseBusters-clean.
+# Top-1, PoseBusters-clean. Use pb_passes_all directly, no `.get()` fallback —
+# we just asserted the column exists.
 top1_qc = (
-    scores_qc[(scores_qc["pose_rank"] == 1) & (scores_qc.get("pb_passes_all", True))]
+    scores_qc[(scores_qc["pose_rank"] == 1) & scores_qc["pb_passes_all"]]
     .sort_values("cnn_affinity", ascending=False)
     .reset_index(drop=True)
 )
-print(f"{len(top1_qc):,} compounds have a PoseBusters-clean top-1 pose.")
+n_clean = int(scores_qc["pb_passes_all"].sum())
+print(
+    f"{len(top1_qc):,} compounds have a PoseBusters-clean top-1 pose "
+    f"(out of {scores_qc['compound_id'].nunique()} compounds, "
+    f"{n_clean}/{len(scores_qc)} poses PoseBusters-clean overall)."
+)
 top1_qc.head(15)
 """),
 
