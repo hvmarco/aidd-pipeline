@@ -37,12 +37,13 @@ import logging
 import platform
 import shutil
 import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Iterator, Sequence, Union
 
 import pandas as pd
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem, rdMolAlign
 
 PathLike = Union[str, Path]
@@ -472,6 +473,25 @@ def _read_first_mol(path: Path, *, index: int = 0) -> Chem.Mol:
 # PoseBusters QC
 # ---------------------------------------------------------------------------
 
+@contextmanager
+def _suppress_rdkit_warnings() -> Iterator[None]:
+    """Locally silence RDKit's per-molecule warning logger.
+
+    PoseBusters loads every pose in the input SDF through ``SDMolSupplier``,
+    and gnina-written SDFs don't carry the "3D" flag in their header — RDKit
+    emits a ``molecule is tagged as 2D, but at least one Z coordinate is not
+    zero`` warning per pose. On a 100-compound × 9-pose run that's ~900 lines
+    of noise drowning the actual output. The warning is cosmetic (RDKit still
+    parses the molecule correctly), so we silence it for the duration of the
+    PoseBusters call and re-enable it afterwards.
+    """
+    RDLogger.DisableLog("rdApp.warning")
+    try:
+        yield
+    finally:
+        RDLogger.EnableLog("rdApp.warning")
+
+
 def run_posebusters(
     poses_sdf: PathLike,
     receptor: PathLike | None = None,
@@ -495,10 +515,11 @@ def run_posebusters(
     from posebusters import PoseBusters  # imported lazily; pip-installed
 
     pb = PoseBusters(config=mode)
-    if receptor is not None and mode != "mol":
-        df = pb.bust(mol_pred=str(poses_sdf), mol_cond=str(receptor), full_report=full_report)
-    else:
-        df = pb.bust(mol_pred=str(poses_sdf), full_report=full_report)
+    with _suppress_rdkit_warnings():
+        if receptor is not None and mode != "mol":
+            df = pb.bust(mol_pred=str(poses_sdf), mol_cond=str(receptor), full_report=full_report)
+        else:
+            df = pb.bust(mol_pred=str(poses_sdf), full_report=full_report)
 
     bool_cols = [c for c in df.columns if df[c].dtype == bool]
     if bool_cols:
