@@ -21,7 +21,7 @@
 | Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 07 (`07_mutation_analysis`)** compares WT vs mutant outputs (structure, IFP, docking shortlist) for drug-resistance / structural-impact studies. See §8. |
 | AF3 fold provider toggle in notebook 99 | locked | Notebook 99 (production runner) gets an **optional `FOLD_PROVIDER` parameter** with values `"colabfold"` (AF2, default — open and reproducible for all users) and `"af3_server"` (AlphaFold Server API — requires per-user academic API key in Colab Secrets, owner-only path). Both branches produce the same canonical `<target>_best.pdb` so downstream cells don't care which folder was used. Single notebook with one toggle, not two parallel notebooks. See §9. |
 | Research-domain focus | locked (2026-05-12) | The pipeline is **shaped for pharmacogenomics + variant-function studies in common solid tumours** (colorectal, lung, breast, GI, GU, ovarian). The central question is "*how does an amino-acid variant change enzyme function / drug binding?*" — not generic SBVS. **Notebook 07 (mutation analysis) is the headline notebook**, not an extension. Notebook 99 takes `(target, variants=[…])` and runs the WT-vs-variant comparison as its primary mode. The four headline demos are listed in §10. |
-| Post-13-step roadmap | locked (2026-05-12) | After steps 1–13 close, the prioritised additions are: **(1) AlphaMissense lookup** (zero-compute pathogenicity scores per variant) — ~½ day; **(2) RaSP ΔΔG integration** for loss-of-function variants — ~1–2 days; **(3) PharmGKB / CPIC clinical ground-truth lookup** — ~1–2 days; **(4) fpocket binding-site detection** on variant folds — ~1 day. See §11 for the rationale and ordering. |
+| Post-13-step roadmap | locked (2026-05-12) | After steps 1–13 close, the prioritised additions are: **(1) AlphaMissense lookup** (zero-compute pathogenicity scores per variant) — ~½ day; **(1.5) gnomAD allele-frequency lookup** (population-stratified variant prioritisation) — ~½ day, paired with (1); **(2) RaSP ΔΔG integration** for loss-of-function variants — ~1–2 days; **(3) PharmGKB / CPIC clinical ground-truth lookup** — ~1–2 days; **(4) fpocket binding-site detection** on variant folds — ~1 day. See §11 for the rationale and ordering. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
@@ -303,8 +303,10 @@ Four cases covering all the named cancer types and the four distinct mutation me
 | **KRAS G12C + sotorasib** | colorectal, lung, pancreatic | GTPase oncogenic driver | sotorasib (covalent inhibitor) |
 | **ESR1 Y537S + tamoxifen** | breast | nuclear-receptor ligand-binding-domain hot-spot (GoF / endocrine resistance) | tamoxifen / fulvestrant |
 | **BRCA1 LoF + olaparib** | ovarian, breast | synthetic-lethality LoF (drug binds PARP, not BRCA — the mutation creates the vulnerability) | olaparib (PARP-bound) |
+| **CYP2D6 *4 / *10 + tamoxifen** | breast (pharmacogene activation) | Phase I oxidation — poor metabolisers under-activate tamoxifen → endoxifen | tamoxifen (substrate; canonical breast-cancer pharmacogene story) |
+| **NAT2 slow acetylator (\*5 / \*6 / \*7)** | colorectal, bladder (cancer risk) | Phase II acetylation — slow acetylators under-detoxify aromatic-amine carcinogens | aromatic amines (substrate; cancer-risk angle vs cancer-therapy angle) |
 
-Each illustrates a *distinct* clinical mechanism — pharmacogene LoF, oncogenic driver, ligand-pocket GoF, synthetic-lethality LoF. The deep walkthrough (DPYD) gets the full pedagogical structure; the other three get brief "*the same pattern applies here*" sections at the end of notebook 07.
+Each illustrates a *distinct* clinical mechanism — pharmacogene LoF (DPYD), oncogenic driver (KRAS), ligand-pocket GoF (ESR1), synthetic-lethality LoF (BRCA1), drug-activation pharmacogene (CYP2D6), and carcinogen-metabolism pharmacogene / cancer-risk angle (NAT2). The deep walkthrough (DPYD) gets the full pedagogical structure; the other five get brief "*the same pattern applies here*" sections at the end of notebook 07. CYP2D6 and NAT2 together cover the two complementary halves of cancer pharmacogenomics — therapy response and cancer risk — and are both directly in the project owner's research domain.
 
 ### Why these four
 
@@ -328,6 +330,22 @@ These additions extend the pipeline's coverage beyond the closed-out 13-step pla
 **Why for this pipeline:** independent of structure-based ΔΔG, AlphaMissense gives a sequence/evolution-based pathogenicity signal. Combine the two and the pipeline can say "this variant is flagged pathogenic by AlphaMissense AND we can structurally explain why" — much stronger claim than either signal alone. Drops in as a feature column in notebook 07.
 
 **Integration:** new helper `aidd.variants.alphamissense_score(uniprot_id, position, alt_aa)`. ~50 lines plus a one-time download of the supplementary CSV (~5 GB). Added as a column to notebook 07's variant-analysis output.
+
+### Priority 1.5 — gnomAD allele-frequency lookup (~½ day)
+
+**What:** [gnomAD](https://gnomad.broadinstitute.org/) (Genome Aggregation Database) gives population-level allele frequencies for >800,000 exomes and genomes, stratified by ancestry. We query it per variant via the public GraphQL API.
+
+**Why for this pipeline:** for pharmacogenomics specifically, allele frequency is the **triage filter** that decides which variants are worth running through the structural pipeline. A variant present in 1 person globally is not the same clinical priority as one at 2% frequency in Europeans. Combined with AlphaMissense, gnomAD gives a clean upstream filter:
+
+- **gnomAD** answers: *is this variant common enough to study?*
+- **AlphaMissense** answers: *is it likely pathogenic?*
+- Their intersection (common + pathogenic) is the variant set worth investing GPU time on.
+
+For pharmacogenes, gnomAD also surfaces **population-stratified frequencies** — DPYD\*2A is ~1.5 % in Europeans but ~0.05 % in East Asians, and that changes regional dosing recommendations. Real clinical question; trivially answered with a gnomAD lookup.
+
+**Integration:** new helper `aidd.variants.gnomad_frequency(uniprot_id, position, alt_aa) -> dict` returning overall + per-population allele frequencies + heterozygote/homozygote counts. ~30–50 lines wrapping the gnomAD GraphQL API. Drops into the variant-selection cell of notebook 07 alongside `alphamissense_score`.
+
+**When this lands:** ideally in the same round as AlphaMissense (Priority 1), since the two are paired conceptually. Together they form the "*should we even bother docking this variant?*" pre-filter.
 
 ### Priority 2 — RaSP ΔΔG prediction (~1–2 days)
 
