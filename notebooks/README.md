@@ -25,7 +25,7 @@ The builders share three small helpers from [`_nb_helpers.py`](_nb_helpers.py): 
 
 **First time / learning mode** — open the notebooks in numerical order (`00` → `06`) and run them cell by cell. Each notebook has markdown blocks explaining both the biology and the technical choices, with a learning-objectives header and a recap at the end. Designed for clinicians, ML/data folks new to structural biology, and Bachelor / Master students.
 
-**Routine screening mode** — once the pipeline is dialled in for a target, use `99_screen_library.ipynb` to run the whole flow end-to-end without scrolling through the teaching content.
+**Routine screening mode / audit-ready report** — once the pipeline is dialled in for a target, `99_screen_library.ipynb` runs the whole flow end-to-end *and* is the artefact reviewers / professors / funders will read. It still teaches — just tighter than 00–06: short background per stage, methods with DOIs, a "Methods summary" cell near the top, and an executive-summary recap. Reviewers drill into 00–06 for detail.
 
 **Mixed use** — re-run only the notebook that changes. For example, if you swap in a new candidate library, you re-run `02_prepare_ligands` and everything from `03_dock_gnina` onward; folding (`01`) and the rescorer (`04`, trained per target) stay cached.
 

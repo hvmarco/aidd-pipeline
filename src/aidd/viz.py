@@ -167,3 +167,50 @@ def show_interaction_network(fp, ligand_mol, *, kind: str = "frame", **kwargs):
     from prolif.plotting.network import LigNetwork
 
     return LigNetwork.from_fingerprint(fp, ligand_mol, kind=kind, **kwargs).display()
+
+
+# ---------------------------------------------------------------------------
+# pLDDT colouring (for AlphaFold / ColabFold output)
+# ---------------------------------------------------------------------------
+
+# Standard AlphaFold pLDDT colour scheme.
+PLDDT_COLORS = {
+    "very_high": "#0053D6",  # blue       (pLDDT >= 90)
+    "confident": "#65CBF3",  # light blue (70 <= pLDDT < 90)
+    "low":       "#FFDB13",  # yellow     (50 <= pLDDT < 70)
+    "disordered": "#FF7D45",  # orange    (pLDDT < 50)
+}
+
+
+def show_structure_colored_by_plddt(
+    pdb_path: PathLike,
+    *,
+    width: int = 600,
+    height: int = 500,
+) -> py3Dmol.view:
+    """Render a structure coloured by pLDDT (AlphaFold convention).
+
+    AlphaFold / ColabFold write per-residue pLDDT into the PDB B-factor column.
+    This function maps the four standard bands to the AlphaFold colour scheme:
+
+    - pLDDT ≥ 90      : blue       (very high confidence)
+    - 70 ≤ pLDDT < 90 : light blue (confident)
+    - 50 ≤ pLDDT < 70 : yellow     (low confidence)
+    - pLDDT < 50      : orange     (likely disordered)
+
+    Hover-over residues to see their numeric pLDDT in the B-factor.
+    """
+    view = py3Dmol.view(width=width, height=height)
+    view.removeAllModels()
+    view.addModel(Path(pdb_path).read_text(), format="pdb")
+
+    bands = [
+        ({"b": {"gte": 90}},                            PLDDT_COLORS["very_high"]),
+        ({"b": {"gte": 70, "lt": 90}},                  PLDDT_COLORS["confident"]),
+        ({"b": {"gte": 50, "lt": 70}},                  PLDDT_COLORS["low"]),
+        ({"b": {"lt": 50}},                             PLDDT_COLORS["disordered"]),
+    ]
+    for selector, colour in bands:
+        view.setStyle(selector, {"cartoon": {"color": colour}})
+    view.zoomTo()
+    return view

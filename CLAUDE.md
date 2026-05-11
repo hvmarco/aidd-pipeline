@@ -101,6 +101,18 @@ The Leiden/ULLA course archived in `_archive/` is the style reference: pedagogic
 - Don't talk down. Assume a smart non-expert — give them the bridge, not a lecture.
 - **Teaching goes in markdown cells, not code comments.** The `Code style (Python)` rules above still apply to the cells themselves: minimal inline comments, clean code.
 
+### Notebook 99 (production runner) is *also* a teaching notebook
+
+`99_screen_library.ipynb` is what reviewers, professors, and grant funders will read. It still teaches, just tighter than 00–06:
+
+- Background blocks: 1–2 short paragraphs per stage (vs 3–4 in teaching notebooks).
+- No deep glossary table — expand abbreviations on first use inline.
+- Every method gets a one-line description **with a citation (paper DOI)** so reviewers can verify the methodological pedigree.
+- A "Methods summary" cell near the top a funder can read in 60 seconds.
+- Recap is the executive summary: result + confidence + caveats + provenance links back to notebooks 00–06.
+
+What 99 does *not* do: redefine concepts that the teaching notebooks already cover. Reviewers drill into 00–06 for detail.
+
 ## Dependencies & environments
 
 - Single source of truth is `environment.yml` (conda/mamba). A `requirements-colab.txt` exists for the Colab-only path where conda isn't practical — keep the two in sync.
