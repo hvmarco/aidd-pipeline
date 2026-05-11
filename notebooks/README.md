@@ -49,13 +49,13 @@ For **mutation studies** (e.g. drug-resistance screens), run notebooks 01–06 o
 | 01  | `_build_01_fold_target.py`               | `01_fold_target.ipynb`              | ColabFold target structure prediction         | **Colab GPU**        | planned |
 | 02  | `_build_02_prepare_ligands.py`           | `02_prepare_ligands.ipynb`          | SMILES → standardised → drug-like → 3-D       | local CPU / Colab    | ✅ done |
 | 03  | `_build_03_dock_gnina.py`                | `03_dock_gnina.ipynb`               | gnina docking + PoseBusters QC                | **Colab** (gnina is Linux-only) | ✅ done |
-| 04  | `_build_04_score_classical.py`           | `04_score_classical.ipynb`          | IFP + ML rescorer (sklearn / XGBoost)         | local CPU / Colab    | planned |
+| 04  | `_build_04_score_classical.py`           | `04_score_classical.ipynb`          | IFP + ML rescorer (sklearn / XGBoost)         | **Colab** (gnina cache build), then any CPU | drafted, awaiting Colab smoke-test |
 | 05  | `_build_05_dock_boltz.py`                | `05_dock_boltz.ipynb`               | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | planned |
 | 06  | `_build_06_consensus_and_shortlist.py`   | `06_consensus_and_shortlist.ipynb`  | consensus rank → `shortlist.sdf`              | local CPU / Colab    | planned |
 | 07  | `_build_07_mutation_analysis.py`         | `07_mutation_analysis.ipynb`        | diff WT vs mutant runs (structure + IFP + shortlist) | local CPU / Colab    | planned (after 06) |
 | 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner (accepts `mutations=` list) | Colab Pro+ recommended | planned (after 07) |
 
-Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold), `03` (gnina is Linux-native — Windows / macOS users go via Colab or WSL2), and `05` (Boltz-2). The CPU-only notebooks (`00`, `02`, `04`, `06`, `07`) also work on Windows / macOS locally.
+Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold), `03` (gnina is Linux-native — Windows / macOS users go via Colab or WSL2), and `05` (Boltz-2). Notebook `04` is **Colab-only for its first run on a target** (it builds the labelled-subset docking cache via gnina), then runs anywhere on CPU once the cache is on Drive. The remaining CPU-only notebooks (`00`, `02`, `06`, `07`) work on Windows / macOS locally.
 
 ## Inputs / outputs at each stage
 
