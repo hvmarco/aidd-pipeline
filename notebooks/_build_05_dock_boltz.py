@@ -591,6 +591,7 @@ library_affinity.head()
 
 A non-zero `n_failed` is not catastrophic — the consensus shortlist downstream is robust to partial coverage in either lane. But the *kinds* of failure (`failures_by_class` in the summary) tell you whether the run is healthy:
 
+- `boltz_input_invalid`: Boltz's internal RDKit pipeline rejected the SMILES (kekulization, valence, fragment-chooser). The CLI prints `Failed to process … Skipping. Error: …` and exits 0; the wrapper catches the pattern and marks the compound. A small fraction (< 5 %) is expected even on cleanly-prepared libraries — Boltz's `LARGEST_FRAGMENT_CHOOSER` is stricter than the standardisation in notebook `02`. If > 10 %, pre-filter the input SDF through the same chooser in notebook `02` before re-running.
 - `boltz_oom` on a small fraction (< 5 %) usually means a few large ligands; re-run those on a bigger GPU after the main library completes.
 - `boltz_msa_failed` is a transient infrastructure problem on the MSA server; retry by deleting the markers (`per_compound/*.FAILED`) and re-running this cell.
 - `boltz_co_fold_diverged` on a single compound is rare and is fine to leave as-is.

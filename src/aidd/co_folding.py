@@ -264,8 +264,23 @@ def _classify_error(returncode: int, log_tail: str) -> str:
 
     The taxonomy starts conservative; widen the buckets as real failures from
     Colab runs surface patterns that aren't covered here.
+
+    Buckets, in priority order:
+
+    - ``boltz_input_invalid``    — Boltz's RDKit pipeline rejected the SMILES
+                                   (kekulization, valence, fragment-chooser).
+                                   The CLI prints ``Failed to process … Skipping``
+                                   and exits 0, which is why we explicitly look
+                                   for this pattern: returncode alone won't catch it.
+    - ``boltz_oom``              — out-of-memory; OOM kill (137) or "CUDA out of memory".
+    - ``boltz_msa_failed``       — MSA backend failure.
+    - ``boltz_co_fold_diverged`` — NaN / inf / model divergence.
+    - ``boltz_install_error``    — weight load failure, missing CUDA libs at startup.
+    - ``boltz_nonzero_exit``     — generic catch-all.
     """
     t = log_tail.lower()
+    if "failed to process" in t or "skipping. error" in t or "kekuliz" in t:
+        return "boltz_input_invalid"
     if returncode == 137 or "out of memory" in t or "cuda oom" in t:
         return "boltz_oom"
     if "mmseqs" in t or "msa server" in t or "alphafold msa" in t:
@@ -294,6 +309,21 @@ def _format_boltz_error(returncode: int, log_path: Path) -> str:
         f"boltz exited with status {returncode}. Full log at {log_path}. "
         f"Last lines:\n{tail}{hint}"
     )
+
+
+def _format_boltz_input_error(log_text: str, log_path: Path) -> str:
+    """Build a debug-friendly message for a silently-skipped Boltz input.
+
+    Boltz-2's CLI exits with status 0 even when it logs ``Failed to process
+    … Skipping. Error: <reason>`` for an input its RDKit pipeline rejected.
+    Find that line in the log and surface it as the error summary so the
+    failure marker carries the real cause.
+    """
+    for line in log_text.splitlines():
+        s = line.strip()
+        if "Failed to process" in s or "Skipping. Error:" in s:
+            return f"Boltz silently skipped the input (status 0). {s} Full log at {log_path}."
+    return f"Boltz silently skipped the input (status 0, no clear cause). Full log at {log_path}."
 
 
 # ---------------------------------------------------------------------------
@@ -364,8 +394,13 @@ def predict_complex(
 
     b = require_boltz()
 
-    with tempfile.TemporaryDirectory(prefix="boltz_in_", dir=output_dir) as tmp:
-        tmp_path = Path(tmp)
+    # Use mkdtemp (not TemporaryDirectory) so the tempdir survives on failure
+    # for forensic inspection -- a silent Boltz skip writes nothing to the
+    # output dir except boltz.log, and the tempdir contents may carry the
+    # only on-disk evidence of what went wrong. Only clean up on success.
+    tmp_path = Path(tempfile.mkdtemp(prefix="boltz_in_", dir=output_dir))
+    cleanup_tmp = False
+    try:
         input_yaml = tmp_path / f"{cid}.yaml"
         input_yaml.write_text(_build_boltz_yaml(sequence, smiles, use_msa_server=use_msa_server))
         boltz_out_root = tmp_path / "out"
@@ -384,12 +419,24 @@ def predict_complex(
         if proc.returncode != 0:
             raise RuntimeError(_format_boltz_error(proc.returncode, boltz_log))
 
+        # Boltz-2's CLI exits 0 even when it skips an input it can't process
+        # ("Failed to process … Skipping. Error: <reason>"). Catch this here
+        # so the outer loop's on_failure path classifies it cleanly instead
+        # of letting _find_prediction_dir raise FileNotFoundError.
+        log_text = boltz_log.read_text() if boltz_log.exists() else ""
+        if "Failed to process" in log_text or "Skipping. Error:" in log_text:
+            raise RuntimeError(_format_boltz_input_error(log_text, boltz_log))
+
         pred_dir = _find_prediction_dir(boltz_out_root)
         parsed = _parse_boltz_outputs(pred_dir)
 
         shutil.copy2(parsed["complex_cif"], complex_path)
         shutil.copy2(parsed["affinity_json"], affinity_path)
         shutil.copy2(parsed["confidence_json"], confidence_path)
+        cleanup_tmp = True
+    finally:
+        if cleanup_tmp:
+            shutil.rmtree(tmp_path, ignore_errors=True)
 
     metadata = {
         **cur_hashes,
@@ -516,6 +563,13 @@ def predict_library(
     consecutive_fresh_failures = 0
     run_log_lines: list[str] = []
 
+    def _flush_run_log() -> None:
+        """Persist per-compound timing after every iteration so partial
+        progress survives any uncategorised crash (the timing data we lost
+        on Colab attempt #3 when an uncaught FileNotFoundError broke the
+        loop before the end-of-function write was reached)."""
+        run_log.write_text("\n".join(run_log_lines) + ("\n" if run_log_lines else ""))
+
     iterator = _maybe_tqdm(rows, total=len(rows), desc="boltz2 cofold", enable=progress)
     for compound_id, smiles in iterator:
         _check_compound_id(compound_id)
@@ -525,11 +579,13 @@ def predict_library(
         if not overwrite and failed_marker.exists():
             n_cached_failed += 1
             run_log_lines.append(f"{compound_id}\tcached_failed")
+            _flush_run_log()
             continue
         if not overwrite and _has_cached_success(cdir, sequence=sequence, smiles=smiles):
             n_cached_ok += 1
             consecutive_fresh_failures = 0
             run_log_lines.append(f"{compound_id}\tcached_success")
+            _flush_run_log()
             continue
 
         if not boltz_ready:
@@ -550,6 +606,7 @@ def predict_library(
         except RuntimeError as exc:
             dt = (_dt.datetime.now(_dt.timezone.utc) - t_start).total_seconds()
             run_log_lines.append(f"{compound_id}\tfresh_failed\t{dt:.1f}s")
+            _flush_run_log()
             if on_failure == "raise":
                 raise
             log_tail = _read_log_tail(cdir / "boltz.log", n=30)
@@ -585,6 +642,7 @@ def predict_library(
         else:
             dt = (_dt.datetime.now(_dt.timezone.utc) - t_start).total_seconds()
             run_log_lines.append(f"{compound_id}\tfresh_success\t{dt:.1f}s")
+            _flush_run_log()
             n_fresh_ok += 1
             consecutive_fresh_failures = 0
 
@@ -597,7 +655,7 @@ def predict_library(
         "%d fresh-failed (total %d compounds).",
         n_cached_ok, n_cached_failed, n_fresh_ok, n_fresh_failed, len(rows),
     )
-    run_log.write_text("\n".join(run_log_lines) + ("\n" if run_log_lines else ""))
+    _flush_run_log()  # final flush (per-iteration flushes have it covered; redundancy is cheap)
 
     scope_ids = [cid for cid, _ in rows]
     df = _aggregate_affinity(per_compound_root, affinity_csv, scope_ids=scope_ids)
