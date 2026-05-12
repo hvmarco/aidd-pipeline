@@ -64,8 +64,8 @@ After running this notebook you will be able to:
 ## Runtime
 
 - **Setup + Boltz-2 install:** roughly a minute, one-time per Colab runtime (PyPI install). Model weights (~5 GB) download on the first inference call.
-- **5-compound smoke-test:** *measured below in Section 4 — we deliberately do not write a number in this markdown until we have run it once. See `feedback_measure_before_rationale.md` for the rule.*
-- **Full 414-compound library run:** extrapolated from the smoke-test measurement in Section 5.
+- **3-compound smoke-test:** *measured below in Section 5 — we deliberately do not write a number in this markdown until we have run it once. See `feedback_measure_before_rationale.md` for the rule.*
+- **Full 414-compound library run:** extrapolated from the smoke-test measurement in Section 6, using a pre-cached MSA from Section 3 so per-compound time is dominated by inference rather than MSA-server queries.
 
 `USE_DRIVE = True` (the default on Colab) writes every per-compound output to Google Drive so a runtime disconnect at compound N of 414 does not lose the work. Re-running picks up where it stopped.
 """),
@@ -126,26 +126,32 @@ Verify a GPU is attached, clone the repo on Colab, install Boltz-2 from PyPI, an
 
 ### About the Boltz-2 install — mirror upstream, restart the kernel once
 
-The install command is taken verbatim from [Boltz-2's README](https://github.com/jwohlwend/boltz#installation):
+The install command is taken from [sokrypton's Boltz1.ipynb](https://github.com/sokrypton/ColabFold/blob/main/Boltz1.ipynb) — the community-vetted Colab pattern for Boltz on T4 / A100 / L4 runtimes:
 
 ```
-pip install boltz[cuda] -U
+pip install -q --no-warn-conflicts boltz
 ```
 
-We add a pinned version (`==2.2.1`) so the cached outputs of a screen are reproducible against a specific Boltz release; their `-U` is for end-users tracking latest. To bump the pin: edit `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py), bump `BOLTZ_VERSION_PIN` in the setup cell to match, delete `/content/_aidd_boltz_setup_done`, re-run on a fresh Colab runtime, and on success bump `BOLTZ2_LAST_VERIFIED` to today and commit.
+We add a pinned version (`==2.2.1`) so the cached outputs of a screen are reproducible against a specific Boltz release. Two intentional differences from Boltz's own README (`pip install boltz[cuda] -U`):
+
+- **No `[cuda]` extra.** Colab's image already ships a CUDA-pinned torch wheel; the `[cuda]` extra would force a redundant torch reinstall that adds version-skew risk (we hit exactly this on attempts 1–2 of this notebook). Bare `boltz` lets pip reuse Colab's torch.
+- **`--no-warn-conflicts`.** Suppresses the cosmetic "pip's dependency resolver does not currently take into account…" warnings about Colab's unrelated packages wanting `numpy>=2`. Those warnings have always been benign (none of the conflicting packages are imported by our notebook) but they're scary to read mid-install.
+
+To bump the pin: edit `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py), bump `BOLTZ_VERSION_PIN` in the setup cell to match, delete `/content/_aidd_boltz_setup_done`, re-run on a fresh Colab runtime, and on success bump `BOLTZ2_LAST_VERIFIED` to today and commit.
 
 #### Per-package audit — what comes from where
 
 | Package | Boltz 2.2.1 pin (from [pyproject.toml](https://github.com/jwohlwend/boltz/blob/main/pyproject.toml)) | Notebook needs it? | Source |
 |---|---|---|---|
-| `torch` | `>=2.2` (+ `[cuda]` extra) | yes (Boltz inference) | Boltz transitive |
-| `numpy` | `>=1.26,<2.0` | yes | Boltz transitive |
+| `torch` | `>=2.2` | yes (Boltz inference) | **Colab pre-installed** (CUDA wheel) |
+| `numpy` | `>=1.26,<2.0` | yes | Boltz transitive (downgrades Colab default) |
 | `scipy` | `==1.13.1` | yes (`scipy.stats.spearmanr` in evaluation cell) | Boltz transitive |
 | `scikit-learn` | `==1.6.1` | yes (`aidd.scoring.evaluate_scores` uses it) | Boltz transitive |
 | `pandas` | `>=2.2.2` | yes | Boltz transitive |
 | `rdkit` | `>=2024.3.2` | yes (`Chem.SDMolSupplier`) | Boltz transitive |
 | `biopython` | `==1.84` | no (not used in this notebook) | Boltz transitive |
-| `py3Dmol` | not a Boltz dep | yes (Section 6 sanity-check viewer) | **Explicit install** |
+| `colabfold` | not a Boltz dep | yes (Section 3 MSA generator, only on cache miss) | **Colab pre-installed via setup cell's transitive deps** |
+| `py3Dmol` | not a Boltz dep | yes (Section 7 sanity-check viewer) | **Explicit install** |
 | `matplotlib` | not a Boltz dep | yes (ROC + scatter plots) | **Explicit install** |
 | `seaborn` | not a Boltz dep | yes (theme; one `sns.set_theme()` call) | **Explicit install** |
 
@@ -159,7 +165,7 @@ The fix is to kill the Python kernel right after the install. The runtime stays 
 
 #### Flow when you run this cell
 
-1. **Run the setup cell once.** It installs `boltz[cuda]==2.2.1 py3Dmol matplotlib seaborn`, drops the sentinel, and kills the Python kernel.
+1. **Run the setup cell once.** It installs `boltz==2.2.1 py3Dmol matplotlib seaborn` with `--no-warn-conflicts`, drops the sentinel, and kills the Python kernel.
 2. **Wait ~10 s for Colab to reconnect.** The runtime stays warm; the Python process restarts.
 3. **Re-run the setup cell.** The sentinel is present; the cell skips the install and finishes with the GPU + CLI probe + version summary.
 
@@ -170,7 +176,7 @@ Tesla T4, 15360 MiB                        # or "NVIDIA A100-SXM4-40GB, 40960 Mi
 Cloning into '/content/aidd-pipeline'...
 ...
 Receiving objects: 100% (...), done.
-Installing boltz[cuda]==2.2.1 + py3Dmol + matplotlib + seaborn… (~3-5 min on Colab)
+Installing boltz==2.2.1 + py3Dmol + matplotlib + seaborn… (~3-5 min on Colab)
 
 Install complete. Restarting the Python kernel so the newly
 installed numpy / scipy / scikit-learn versions take effect.
@@ -194,7 +200,7 @@ Boltz-2 version: 2.2.1
 
 If you see `ModuleNotFoundError` on `matplotlib` or `seaborn` after pass 2, Colab's defaults have changed — paste the traceback in chat and we'll widen the install line. (Low risk; both packages have been Colab defaults for years.)
 
-Model weights (~GB-scale) and the CCD ligand-chemistry dataset are downloaded by the CLI on the **first** `boltz predict` call, not at install time. The next section (Section 2) explicitly warms that download up so the runtime measurements in Section 4 are clean.
+Model weights (~GB-scale) and the CCD ligand-chemistry dataset are downloaded by the CLI on the **first** `boltz predict` call, not at install time. The next section (Section 2) explicitly warms that download up so the runtime measurements in Section 5 are clean.
 """),
 
         code(title="Setup: GPU check, clone repo, install Boltz-2 (kernel restarts once)", source="""
@@ -237,18 +243,19 @@ if IS_COLAB:
         )
 
     if not SETUP_SENTINEL.exists():
-        # Mirror Boltz-2's upstream install line (pip install boltz[cuda] -U,
-        # see https://github.com/jwohlwend/boltz#installation), pinned to our
-        # tested version. The [cuda] extra brings the CUDA-pinned torch wheel.
-        # Boltz brings numpy / scipy / scikit-learn / rdkit / pandas at exact
-        # version pins (see the audit table above) -- DO NOT add them to this
-        # install line, that's the layered-install antipattern that broke the
-        # first two Colab attempts on this notebook.
-        # py3Dmol + matplotlib + seaborn ARE explicit here because they are
+        # Mirror sokrypton's Boltz Colab pattern verbatim:
+        # https://github.com/sokrypton/ColabFold/blob/main/Boltz1.ipynb
+        # Bare `boltz` (no [cuda] extra) so Colab's pre-installed CUDA-pinned
+        # torch is reused. --no-warn-conflicts suppresses cosmetic resolver
+        # warnings about Colab's unrelated packages wanting numpy>=2.
+        # Boltz brings numpy / scipy / scikit-learn / rdkit / pandas at
+        # exact version pins (see the audit table above) -- DO NOT add them
+        # to this install line.
+        # py3Dmol + matplotlib + seaborn are explicit because they are
         # notebook plotting deps, not Boltz deps.
-        print(f"Installing boltz[cuda]=={BOLTZ_VERSION_PIN} + py3Dmol + matplotlib + seaborn… "
+        print(f"Installing boltz=={BOLTZ_VERSION_PIN} + py3Dmol + matplotlib + seaborn… "
               f"(~3-5 min on Colab)")
-        !pip install -q "boltz[cuda]=={BOLTZ_VERSION_PIN}" py3Dmol matplotlib seaborn
+        !pip install -q --no-warn-conflicts "boltz=={BOLTZ_VERSION_PIN}" py3Dmol matplotlib seaborn
         SETUP_SENTINEL.touch()
         print()
         print("Install complete. Restarting the Python kernel so the newly")
@@ -351,8 +358,8 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 
 The Boltz-2 CLI fetches its model weights (~GB-scale) and the [CCD](https://www.wwpdb.org/data/ccd) ligand-chemistry dataset the **first** time `boltz predict` runs in a session. The download is not part of the install — it happens at first inference. Two consequences if we don't surface it explicitly:
 
-- The first compound of any Colab run will be **much slower than steady-state**, and the per-compound runtime in Section 4's smoke-test would be skewed by the weight download.
-- If the download fails (network blip, mirror down), it would fail mid-way through Section 4 rather than at a visible setup step.
+- The first compound of any Colab run will be **much slower than steady-state**, and the per-compound runtime in Section 5's smoke-test would be skewed by the weight download.
+- If the download fails (network blip, mirror down), it would fail mid-way through Section 5 rather than at a visible setup step.
 
 So we warm Boltz up here with a tiny throwaway prediction — a 5-residue peptide + a small ligand — that triggers the weight download in **single-sequence mode** (no MSA server query, just to keep this step fast and deterministic). On a healthy runtime this takes a few minutes the first time and a couple of seconds on every subsequent Colab session. Output goes to `/content/_boltz_warmup/`, never to Drive.
 
@@ -403,7 +410,74 @@ The numeric values themselves are **meaningless** here — a 5-residue peptide +
 """),
 
         markdown("""
-## 3. Inputs — target sequence + the same 414 compounds as notebook 04
+## 3. Locate (or generate) the protein MSA
+
+### Background
+
+Boltz-2 needs a **multiple-sequence alignment** (MSA) of the protein. Without one, it runs in *single-sequence mode* — much less accurate, basically a sequence-conditioned random fold. With one, it uses the co-evolution signal in the MSA the same way AF2 does (Boltz-2 is built on the same modelling principles).
+
+By default Boltz queries `api.colabfold.com` for a fresh MSA on **every** CLI invocation. For a library of N compounds against the **same** protein, that's N redundant queries against shared community infrastructure — wasteful, slow (each query dominates per-compound wall time), and rate-limit-prone. Smoke-test attempt #3 measured ~6.5 min per compound on a T4 in this mode for ERK2; a full 414-compound run would have been ~45 GPU-hours.
+
+Boltz-2 accepts a **pre-computed MSA** via the `msa:` field on the protein chain in the input YAML (and our wrapper threads it through `predict_complex` / `predict_library`). Same MSA, reused for every per-compound call — Boltz only spends time on actual inference, not on hammering the MSA server.
+
+### What this cell does
+
+1. Probes `data/derived/<target>/fold/msa/` for an existing `.a3m` from notebook `01` (ColabFold writes the MSA there as part of its normal output).
+2. If found, uses it directly.
+3. If not, runs `colabfold_batch <fasta> <out> --msa-only` to generate one (~5 min, one-time, writes to the same `fold/msa/` directory so notebook `01` can pick it up too on its own subsequent runs — same idempotency contract).
+
+The MSA file is a few hundred KB to a few MB, lives on Drive, survives across Colab sessions.
+"""),
+
+        code(title="Locate or generate the ERK2 protein MSA", source="""
+TARGET = "erk2"
+FOLD_DIR = DATA_ROOT / TARGET / "fold"
+MSA_DIR  = FOLD_DIR / "msa"
+
+# Must match notebooks/_build_01_fold_target.py exactly. UniProt P28482.
+# Same string here AND in Section 4 below; do not change one without the other.
+ERK2_SEQUENCE = (
+    "MAAAAAAGAGPEMVRGQVFDVGPRYTNLSYIGEGAYGMVCSAYDNLNKVRVAIKKISPFEHQTYCQRTLREIKILLRFRHENIIGINDIIRAPTI"
+    "EQMKDVYIVQDLMETDLYKLLKTQHLSNDHICYFLYQILRGLKYIHSANVLHRDLKPSNLLLNTTCDLKICDFGLARVADPDHDHTGFLTEYVA"
+    "TRWYRAPEIMLNSKGYTKSIDIWSVGCILAEMLSNRPIFPGKHYLDQLNHILGILGSPSQEDLNCIINLKARNYLLSLPHKNKVPWNRLFPNAD"
+    "SKALDLLDKMLTFNPHKRIEVEQALAHPYLEQYYDPSDEPIAEAPFKFDMELDDLPKEKLKELIFEETARFQPGYRS"
+)
+
+msa_candidates = sorted(MSA_DIR.glob("*.a3m")) if MSA_DIR.exists() else []
+if msa_candidates:
+    MSA_PATH = msa_candidates[0].resolve()
+    print(f"Reusing existing MSA from notebook 01:")
+    print(f"  {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}")
+    print(f"  {MSA_PATH.stat().st_size / 1024:.1f} KB")
+else:
+    print(f"No .a3m found under {pretty_path(MSA_DIR, DATA_ROOT, REPO_ROOT)}.")
+    print(f"Generating fresh MSA with `colabfold_batch --msa-only`… (~5 min, one-time)")
+    MSA_DIR.mkdir(parents=True, exist_ok=True)
+    fasta_path = MSA_DIR / f"{TARGET}.fasta"
+    fasta_path.write_text(f">{TARGET}\\n{ERK2_SEQUENCE}\\n")
+    !colabfold_batch "{fasta_path}" "{MSA_DIR}" --msa-only
+    msa_candidates = sorted(MSA_DIR.glob("*.a3m"))
+    if not msa_candidates:
+        raise RuntimeError(
+            f"colabfold_batch --msa-only produced no .a3m files under {MSA_DIR}. "
+            "Check the cell output above for the actual error; common causes are "
+            "MMseqs2 server overload (retry in a few minutes) and a network blip."
+        )
+    MSA_PATH = msa_candidates[0].resolve()
+    print(f"Generated MSA: {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}  "
+          f"({MSA_PATH.stat().st_size / 1024:.1f} KB)")
+"""),
+
+        markdown("""
+### Interpreting the cell output
+
+If notebook `01` has already been run for ERK2 on Drive, you'll see the "Reusing existing MSA" branch — milliseconds, no MMseqs2 query. If notebook `01` has not been run (e.g. fresh checkout), the fallback runs `colabfold_batch` once. Either way, the rest of this notebook gets a path to a `.a3m` it can pass to every Boltz call.
+
+`MSA_PATH` is the variable Sections 5 and 6 below use; it must be set after this cell runs.
+"""),
+
+        markdown("""
+## 4. Inputs — target sequence + the same 414 compounds as notebook 04
 
 ### Background
 
@@ -412,17 +486,13 @@ We re-use **exactly** the compounds that notebook `04` successfully docked: the 
 The target sequence is human ERK2 (MAPK1, [UniProt P28482](https://www.uniprot.org/uniprotkb/P28482)). It must match the sequence used in notebook `01` so the consensus story stays coherent across the pipeline. If you change it here, change it there too.
 """),
 
-        code(title="Inputs: target sequence, paths, output directory", source="""
-TARGET = "erk2"
-
-# Must match notebooks/_build_01_fold_target.py exactly. UniProt P28482.
-ERK2_SEQUENCE = (
-    "MAAAAAAGAGPEMVRGQVFDVGPRYTNLSYIGEGAYGMVCSAYDNLNKVRVAIKKISPFEHQTYCQRTLREIKILLRFRHENIIGINDIIRAPTI"
-    "EQMKDVYIVQDLMETDLYKLLKTQHLSNDHICYFLYQILRGLKYIHSANVLHRDLKPSNLLLNTTCDLKICDFGLARVADPDHDHTGFLTEYVA"
-    "TRWYRAPEIMLNSKGYTKSIDIWSVGCILAEMLSNRPIFPGKHYLDQLNHILGILGSPSQEDLNCIINLKARNYLLSLPHKNKVPWNRLFPNAD"
-    "SKALDLLDKMLTFNPHKRIEVEQALAHPYLEQYYDPSDEPIAEAPFKFDMELDDLPKEKLKELIFEETARFQPGYRS"
-)
+        code(title="Inputs: paths, output directory (TARGET + ERK2_SEQUENCE come from Section 3)", source="""
+# TARGET and ERK2_SEQUENCE are defined in Section 3 (the MSA-locate cell);
+# we use the same constants here so the sequence string never drifts
+# between cells.
+print(f"Target: {TARGET}")
 print(f"ERK2 sequence length: {len(ERK2_SEQUENCE)} aa")
+print(f"MSA file:             {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}")
 
 # Paths from notebook 04 (the docking lane's output).
 SCORING_DIR    = DATA_ROOT / TARGET / "scoring"
@@ -489,39 +559,49 @@ ligands_df.head()
 """),
 
         markdown("""
-## 4. Smoke-test — measure per-compound runtime on 5 compounds
+## 5. Smoke-test — measure per-compound runtime on 3 fresh compounds with MSA caching
 
 ### Background
 
-Boltz-2 wall time per compound depends on the GPU tier (T4 vs A100 vs L4), the protein length, and the ligand size. The published estimate is "tens of seconds to a few minutes" but we will not write a number into pipeline rationale until we measure it on *this* runtime, against *our* compounds, with the install we just did. (See [`feedback_measure_before_rationale.md`](#) for the rule and the incident that motivated it.)
+Boltz-2 wall time per compound depends on the GPU tier (T4 vs A100 vs L4), the protein length, the ligand size, and — critically — whether the MSA is queried fresh from the server (~5 min per call on T4 for ERK2) or pre-cached on disk (skipped, so per-compound time drops to inference-only). We will not write a number into pipeline rationale until we measure it on *this* runtime, against *our* compounds, with the install we just did. (See [`feedback_measure_before_rationale.md`](#) for the rule and the incident that motivated it.)
 
 ### What this cell does
 
-Pick the first 5 compounds and run `aidd.co_folding.predict_library` on them. The function writes per-compound outputs to a small subdirectory so the smoke-test cache is separate from the full-library cache (different `out_dir`). The cell prints the per-compound runtimes from `run.log`.
+Pick **three compounds the previous (MSA-server-mode) attempt never saw** — indices 5, 6, 7 of `ligands_df` — and run `predict_library(msa_path=MSA_PATH, ...)`. All three use the same on-disk MSA from Section 3 (no MSA-server calls), so the measured per-compound runtime is the clean "inference-only" number we extrapolate the full-library cost from. The function writes per-compound outputs to `boltz/_smoke_test/`, separate from the full-library cache. Per-compound runtimes are printed from `run.log` at the end, plus the actual compound IDs so re-runs are reproducible.
 """),
 
-        code(title="Boltz-2 smoke-test: 5 compounds, measured timing", source="""
+        code(title="Boltz-2 smoke-test: 3 fresh compounds with cached MSA", source="""
 import time
 
 SMOKE_DIR = BOLTZ_DIR / "_smoke_test"
 SMOKE_DIR.mkdir(parents=True, exist_ok=True)
 
-smoke_df = ligands_df.head(5).copy()
-print(f"Running Boltz-2 on {len(smoke_df)} compounds…")
+# Three compounds the previous (MSA-server-mode) smoke-test never reached.
+# The actual compound_ids are printed for reproducibility before the run starts.
+smoke_df = ligands_df.iloc[5:8].copy().reset_index(drop=True)
+print(f"Smoke-test compounds (indices 5-7 of ligands_df):")
+for _, row in smoke_df.iterrows():
+    print(f"  compound_id={row['compound_id']}    smiles={row['smiles']}")
+print()
+print(f"Using MSA from: {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}")
+print(f"Running Boltz-2 on {len(smoke_df)} compounds with MSA caching enabled…")
+print()
 
 t0 = time.time()
 smoke_affinities = predict_library(
     sequence=ERK2_SEQUENCE,
     ligands=smoke_df,
     out_dir=SMOKE_DIR,
-    use_msa_server=True,
+    msa_path=MSA_PATH,
     progress=True,
     on_failure="skip_with_guard",
     failure_guard_n=5,
 )
 wall = time.time() - t0
+n_fresh = int(smoke_affinities['boltz_affinity'].notna().sum())
 print(f"\\nSmoke-test wall time: {wall/60:.1f} min total, "
-      f"≈ {wall/len(smoke_df):.0f} s per compound (incl. one-time weight download).")
+      f"{n_fresh} successful predictions; "
+      f"≈ {wall/max(n_fresh, 1):.0f} s per fresh compound.")
 
 # run.log has per-compound timings.
 print("\\nPer-compound timing (from run.log):")
@@ -547,7 +627,7 @@ The number to remember from this cell — **steady-state seconds per compound** 
 """),
 
         markdown("""
-## 5. Full library — co-fold all 414 compounds with Boltz-2
+## 6. Full library — co-fold all 414 compounds with Boltz-2
 
 ### Background
 
@@ -568,7 +648,7 @@ library_affinity = predict_library(
     sequence=ERK2_SEQUENCE,
     ligands=ligands_df,
     out_dir=BOLTZ_DIR,
-    use_msa_server=True,
+    msa_path=MSA_PATH,
     progress=True,
     on_failure="skip_with_guard",
     failure_guard_n=5,
@@ -599,7 +679,7 @@ A non-zero `n_failed` is not catastrophic — the consensus shortlist downstream
 """),
 
         markdown("""
-## 6. Sanity check — view one predicted complex in 3-D
+## 7. Sanity check — view one predicted complex in 3-D
 
 ### Background
 
@@ -647,7 +727,7 @@ Use the 3-D viewer interactively (drag to rotate, scroll to zoom) before moving 
 """),
 
         markdown("""
-## 7. Evaluation — does Boltz-2 affinity rank actives above inactives?
+## 8. Evaluation — does Boltz-2 affinity rank actives above inactives?
 
 ### Background
 
@@ -776,7 +856,7 @@ The Spearman correlation between Boltz-2 and gnina CNN_affinity is the **diagnos
 
 ### What the numbers cannot tell you
 
-- **Pose quality.** AUC measures ranking; it does not measure whether the predicted complex is sane. Trust the Section 6 viewer for that, and PoseBusters (in notebook `03`) for gnina poses.
+- **Pose quality.** AUC measures ranking; it does not measure whether the predicted complex is sane. Trust the Section 7 viewer for that, and PoseBusters (in notebook `03`) for gnina poses.
 - **Calibration.** Boltz-2 affinity is roughly pIC50-shaped but not a guaranteed thermodynamic predictor. Treat it as a ranking signal, not as an absolute K_d.
 - **Generalisation to a new target.** Numbers here are for ERK2. The pipeline is built to be target-agnostic; running the same notebook against DPYD or KRAS will tell you whether Boltz-2's signal holds beyond kinase chemistry.
 """),

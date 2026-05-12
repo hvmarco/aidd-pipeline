@@ -181,13 +181,36 @@ def require_boltz() -> Path:
 # YAML config
 # ---------------------------------------------------------------------------
 
-def _build_boltz_yaml(sequence: str, smiles: str, *, use_msa_server: bool) -> str:
+def _build_boltz_yaml(
+    sequence: str,
+    smiles: str,
+    *,
+    use_msa_server: bool,
+    msa_path: PathLike | None = None,
+) -> str:
     """Return a Boltz-2 input YAML for one protein + one ligand + affinity head.
 
     The ligand chain ID is fixed to :data:`LIGAND_CHAIN_ID` so the
     ligand-extraction helper knows where to look in the predicted CIF.
+
+    MSA mode precedence:
+
+    - ``msa_path`` set       → ``msa: <abs path>`` line on the protein chain.
+                               Boltz reads the MSA from disk; do not pass
+                               ``--use_msa_server`` to the CLI in this case.
+    - ``msa_path=None`` and
+      ``use_msa_server=True`` → no ``msa:`` line; Boltz queries the MSA
+                               backend (the caller passes ``--use_msa_server``).
+    - ``msa_path=None`` and
+      ``use_msa_server=False``→ ``msa: empty`` line; Boltz runs in
+                               single-sequence mode (no MSA at all).
     """
-    msa_line = "" if use_msa_server else f"      msa: empty\n"
+    if msa_path is not None:
+        msa_line = f"      msa: {Path(msa_path).resolve()}\n"
+    elif not use_msa_server:
+        msa_line = "      msa: empty\n"
+    else:
+        msa_line = ""
     return (
         "version: 1\n"
         "sequences:\n"
@@ -336,6 +359,7 @@ def predict_complex(
     output_dir: PathLike,
     *,
     compound_id: str | None = None,
+    msa_path: PathLike | None = None,
     use_msa_server: bool = True,
     cache: bool = True,
     boltz_extra: Sequence[str] = (),
@@ -353,12 +377,24 @@ def predict_complex(
     compound_id
         Used as the input YAML stem (Boltz-2 echoes it into output filenames).
         Defaults to the first 16 hex chars of SHA-256(smiles).
+    msa_path
+        Path to a pre-computed protein MSA (``.a3m`` produced by
+        ColabFold / ``colabfold_batch --msa-only``). When set, Boltz reads
+        the MSA from disk and ``--use_msa_server`` is dropped from the CLI.
+        Skips the per-call MSA query that dominates wall time when running
+        many ligands against one protein. Resolved to an absolute path so
+        Boltz finds it regardless of the CLI's CWD.
     use_msa_server
-        When True (default), Boltz-2 queries its remote MSA backend. Set to
-        False for single-sequence mode (faster, less accurate for protein
-        modelling but unaffected for ligand placement on a well-folded target).
+        Ignored when ``msa_path`` is set. Otherwise: when True (default),
+        Boltz-2 queries its remote MSA backend (every CLI call -- not cached
+        client-side). When False, Boltz runs in single-sequence mode (faster
+        but less accurate; useful for warm-up / smoke tests where MSA isn't
+        needed).
     cache
         When True (default), an existing matching cache short-circuits.
+        Cache key is SHA-256(sequence) + SHA-256(smiles); MSA source is NOT
+        part of the key, so switching between MSA-server and msa_path for
+        the same compound is a cache hit.
     boltz_extra
         Extra raw CLI flags appended after the standard arguments.
     """
@@ -402,7 +438,13 @@ def predict_complex(
     cleanup_tmp = False
     try:
         input_yaml = tmp_path / f"{cid}.yaml"
-        input_yaml.write_text(_build_boltz_yaml(sequence, smiles, use_msa_server=use_msa_server))
+        input_yaml.write_text(
+            _build_boltz_yaml(
+                sequence, smiles,
+                use_msa_server=use_msa_server,
+                msa_path=msa_path,
+            )
+        )
         boltz_out_root = tmp_path / "out"
         boltz_out_root.mkdir(exist_ok=True)
 
@@ -410,7 +452,9 @@ def predict_complex(
             str(b), "predict", str(input_yaml),
             "--out_dir", str(boltz_out_root),
         ]
-        if use_msa_server:
+        # Drop --use_msa_server when an on-disk MSA is provided; Boltz reads
+        # the MSA from the path embedded in the YAML.
+        if use_msa_server and msa_path is None:
             cmd.append("--use_msa_server")
         cmd += list(boltz_extra)
 
@@ -442,7 +486,8 @@ def predict_complex(
         **cur_hashes,
         "compound_id":          cid,
         "boltz_version":        BOLTZ2_VERSION,
-        "use_msa_server":       use_msa_server,
+        "use_msa_server":       use_msa_server and msa_path is None,
+        "msa_path":             str(Path(msa_path).resolve()) if msa_path is not None else None,
         "affinity":             parsed["affinity"],
         "affinity_probability": parsed["affinity_probability"],
         "confidence":           parsed["confidence"],
@@ -475,6 +520,7 @@ def predict_library(
     *,
     smiles_col: str = "smiles",
     id_col: str = "compound_id",
+    msa_path: PathLike | None = None,
     use_msa_server: bool = True,
     overwrite: bool = False,
     progress: bool = True,
@@ -521,6 +567,16 @@ def predict_library(
         Either a DataFrame with at least ``id_col`` and ``smiles_col``
         columns, or a path to a prepared SDF (each molecule's ``_Name`` is
         the compound_id; the SMILES is recovered with ``MolToSmiles``).
+    msa_path
+        Optional path to a pre-computed ``.a3m`` MSA for the protein
+        sequence. When set, the same MSA is reused for every per-compound
+        Boltz call -- the architectural fix for the per-CLI-call MSA
+        server queries that dominate wall time when running many ligands
+        against one protein. Get the file by re-using notebook 01's
+        ColabFold output at ``data/derived/<target>/fold/msa/*.a3m`` or by
+        running ``colabfold_batch <fasta> <dir> --msa-only`` for the
+        target sequence. Resolved to an absolute path before passing
+        to Boltz.
     on_failure, failure_guard_n
         Same semantics and defaults as :func:`aidd.docking.dock_library`.
         Boltz-2's error taxonomy: ``boltz_oom``, ``boltz_msa_failed``,
@@ -599,6 +655,7 @@ def predict_library(
                 smiles,
                 cdir,
                 compound_id=compound_id,
+                msa_path=msa_path,
                 use_msa_server=use_msa_server,
                 cache=False,
                 boltz_extra=boltz_extra,
