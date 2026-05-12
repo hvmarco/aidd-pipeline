@@ -50,7 +50,7 @@ For **mutation studies** (e.g. drug-resistance screens), run notebooks 01–06 o
 | 02  | `_build_02_prepare_ligands.py`           | `02_prepare_ligands.ipynb`          | SMILES → standardised → drug-like → 3-D       | local CPU / Colab    | ✅ done |
 | 03  | `_build_03_dock_gnina.py`                | `03_dock_gnina.ipynb`               | gnina docking + PoseBusters QC                | **Colab** (gnina is Linux-only) | ✅ done |
 | 04  | `_build_04_score_classical.py`           | `04_score_classical.ipynb`          | IFP + ML rescorer (sklearn / XGBoost)         | **Colab** (gnina cache build), then any CPU | ✅ done (scaffold AUC: RF 0.66, XGB 0.62 vs baseline 0.48 on ERK2, 2026-05-12) |
-| 05  | `_build_05_dock_boltz.py`                | `05_dock_boltz.ipynb`               | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | planned |
+| 05  | `_build_05_dock_boltz.py`                | `05_dock_boltz.ipynb`               | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | drafted, awaiting Colab smoke-test |
 | 06  | `_build_06_consensus_and_shortlist.py`   | `06_consensus_and_shortlist.ipynb`  | consensus rank → `shortlist.sdf`              | local CPU / Colab    | planned |
 | 07  | `_build_07_mutation_analysis.py`         | `07_mutation_analysis.ipynb`        | diff WT vs mutant runs (structure + IFP + shortlist) | local CPU / Colab    | planned (after 06) |
 | 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner (accepts `mutations=` list) | Colab Pro+ recommended | planned (after 07) |
