@@ -150,10 +150,22 @@ To bump the pin: edit `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd
 | `pandas` | `>=2.2.2` | yes | Boltz transitive |
 | `rdkit` | `>=2024.3.2` | yes (`Chem.SDMolSupplier`) | Boltz transitive |
 | `biopython` | `==1.84` | no (not used in this notebook) | Boltz transitive |
+| `cuequivariance-torch` | not a Boltz dep | yes on Ampere+ GPUs (A100/H100) | **Explicit install** |
+| `cuequivariance-ops-torch-cu12` | not a Boltz dep | yes on Ampere+ GPUs — the actual CUDA-12 kernel binaries | **Explicit install** |
 | `colabfold` | not a Boltz dep | yes (Section 3 MSA generator, only on cache miss) | **Colab pre-installed via setup cell's transitive deps** |
 | `py3Dmol` | not a Boltz dep | yes (Section 7 sanity-check viewer) | **Explicit install** |
 | `matplotlib` | not a Boltz dep | yes (ROC + scatter plots) | **Explicit install** |
 | `seaborn` | not a Boltz dep | yes (theme; one `sns.set_theme()` call) | **Explicit install** |
+
+### Why cuEquivariance is an explicit install
+
+Boltz-2's README states: "On recent NVIDIA GPUs, Boltz leverages the acceleration provided by NVIDIA cuEquivariance kernels." On Ampere+ GPUs (A100, H100) Boltz late-imports `cuequivariance_torch` inside its triangular-multiplicative-update layer when `use_kernels=True`, which is the **default** on those architectures. The dependency is **not** in Boltz's `pyproject.toml` — they expect users with A100/H100 hardware to install it explicitly. There is no graceful fallback path: missing the package crashes the warm-up cell with `ModuleNotFoundError: No module named 'cuequivariance_torch'`.
+
+Two PyPI packages needed:
+- **`cuequivariance-torch`** — core Python package (hyphens-vs-underscores: the `cuequivariance_torch` import name maps to this distribution).
+- **`cuequivariance-ops-torch-cu12`** — the compiled CUDA-12 kernel binaries. This is where the actual GPU acceleration lives. If Colab moves to CUDA 13, bump the suffix to `-cu13`; the core package has no CUDA-version suffix.
+
+On T4 (Turing) Boltz uses a different code path that does not invoke these kernels; the install is harmless on T4 (the packages just sit unused). So we install unconditionally regardless of GPU tier — keeps the setup cell simple.
 
 That's the principle: install Boltz with `[cuda]`, **do not** layer `numpy / scipy / scikit-learn / rdkit / pandas` defensively (Boltz pins them at exact versions), but **do** explicitly install `py3Dmol / matplotlib / seaborn` because they are notebook-only plotting deps not in Boltz's tree. The two failed Colab attempts on this notebook both stemmed from violating the first half of this principle.
 
@@ -165,7 +177,7 @@ The fix is to kill the Python kernel right after the install. The runtime stays 
 
 #### Flow when you run this cell
 
-1. **Run the setup cell once.** It installs `boltz==2.2.1 py3Dmol matplotlib seaborn` with `--no-warn-conflicts`, drops the sentinel, and kills the Python kernel.
+1. **Run the setup cell once.** It installs `boltz==2.2.1 cuequivariance-torch cuequivariance-ops-torch-cu12 py3Dmol matplotlib seaborn` with `--no-warn-conflicts`, drops the sentinel, and kills the Python kernel.
 2. **Wait ~10 s for Colab to reconnect.** The runtime stays warm; the Python process restarts.
 3. **Re-run the setup cell.** The sentinel is present; the cell skips the install and finishes with the GPU + CLI probe + version summary.
 
@@ -176,7 +188,7 @@ Tesla T4, 15360 MiB                        # or "NVIDIA A100-SXM4-40GB, 40960 Mi
 Cloning into '/content/aidd-pipeline'...
 ...
 Receiving objects: 100% (...), done.
-Installing boltz==2.2.1 + py3Dmol + matplotlib + seaborn… (~3-5 min on Colab)
+Installing boltz==2.2.1 + cuequivariance + py3Dmol + matplotlib + seaborn… (~3-5 min on Colab)
 
 Install complete. Restarting the Python kernel so the newly
 installed numpy / scipy / scikit-learn versions take effect.
@@ -243,19 +255,17 @@ if IS_COLAB:
         )
 
     if not SETUP_SENTINEL.exists():
-        # Mirror sokrypton's Boltz Colab pattern verbatim:
-        # https://github.com/sokrypton/ColabFold/blob/main/Boltz1.ipynb
-        # Bare `boltz` (no [cuda] extra) so Colab's pre-installed CUDA-pinned
-        # torch is reused. --no-warn-conflicts suppresses cosmetic resolver
-        # warnings about Colab's unrelated packages wanting numpy>=2.
-        # Boltz brings numpy / scipy / scikit-learn / rdkit / pandas at
-        # exact version pins (see the audit table above) -- DO NOT add them
-        # to this install line.
-        # py3Dmol + matplotlib + seaborn are explicit because they are
-        # notebook plotting deps, not Boltz deps.
-        print(f"Installing boltz=={BOLTZ_VERSION_PIN} + py3Dmol + matplotlib + seaborn… "
+        # Mirror sokrypton's Boltz Colab pattern (no [cuda] extra,
+        # --no-warn-conflicts), plus cuequivariance-* for the Ampere+
+        # kernel path Boltz uses on A100/H100 (see the markdown audit
+        # table above for the full rationale). Single line for shell
+        # compatibility -- backslash continuation in Jupyter `!` cells
+        # is fragile, so we keep it flat. Boltz brings numpy / scipy /
+        # scikit-learn / rdkit / pandas at exact version pins; DO NOT
+        # add them to this install line.
+        print(f"Installing boltz=={BOLTZ_VERSION_PIN} + cuequivariance + py3Dmol + matplotlib + seaborn… "
               f"(~3-5 min on Colab)")
-        !pip install -q --no-warn-conflicts "boltz=={BOLTZ_VERSION_PIN}" py3Dmol matplotlib seaborn
+        !pip install -q --no-warn-conflicts "boltz=={BOLTZ_VERSION_PIN}" cuequivariance-torch cuequivariance-ops-torch-cu12 py3Dmol matplotlib seaborn
         SETUP_SENTINEL.touch()
         print()
         print("Install complete. Restarting the Python kernel so the newly")
