@@ -124,25 +124,44 @@ This is the operational logic behind the consensus shortlist (notebook `06`): ke
 
 Verify a GPU is attached, clone the repo on Colab, install Boltz-2 from PyPI, and confirm the CLI loads. We follow the same install-discipline rule as ColabFold (notebook `01`): mirror the upstream install verbatim, pin to a specific release, do **not** add defensive torch / CUDA pins. See [`feedback_colabfold_install_mirror.md`](https://github.com/anthropics/feedback-rules) for the history (one hour of debugging caused by over-engineered pins on step 7).
 
-### About the Boltz-2 install (read once, then forget)
+### About the Boltz-2 install — runs in **two passes** with one kernel restart
 
-Boltz-2 is on PyPI. We pin to the release in `aidd.co_folding.BOLTZ2_VERSION` (currently `2.1.1`). To update:
+Boltz-2 is on PyPI. The install brings several packages that overlap with Colab's defaults (numpy, scipy, scikit-learn, rdkit) at versions Boltz has tested against. Those upgrades change shared libraries that the running Python kernel has **already imported**, leaving the kernel in a half-bumped state where `from sklearn import …` fails with cryptic ABI errors.
 
-1. Bump `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py).
-2. Re-run this notebook on a fresh Colab runtime.
-3. If everything passes, bump `BOLTZ2_LAST_VERIFIED` to today and commit.
+The fix is to **restart the kernel** after installing Boltz so the new versions are picked up cleanly. The setup cell below does this automatically: on the first run it installs Boltz and kills the kernel; you then re-run the cell, the sentinel file says the install already happened, and the cell completes the GPU probe + CLI check.
+
+So the flow is:
+
+1. **Run the setup cell once.** It installs `boltz==X` + `rdkit` + `py3Dmol`, drops a sentinel file, and kills the Python kernel.
+2. **Wait for Colab to reconnect** (a few seconds — the runtime stays warm; the Python process restarts).
+3. **Re-run the setup cell.** The sentinel is present, so the cell skips the install and finishes with the GPU + CLI probe.
+
+This pattern is the same one ColabFold's AlphaFold2 notebook uses for the same reason. Do **not** add defensive `pip install` lines for numpy / scikit-learn / scipy on top of the Boltz install — those create exactly the version skew the kernel restart is designed to resolve. See [`feedback_colabfold_install_mirror.md`](#) for the painful precedent on step 7.
+
+To bump the pinned Boltz-2 version: edit `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py), re-run this notebook on a fresh Colab runtime (delete `/content/_aidd_boltz_setup_done` to force a re-install), and on success bump `BOLTZ2_LAST_VERIFIED` to today and commit.
 
 Model weights (~5 GB) are downloaded automatically by the CLI on the first inference call and cached under `~/.boltz/`. Subsequent calls in the same runtime reuse the cache. Across runtime restarts, the weights re-download (1–2 minutes on Colab's network).
 """),
 
-        code(title="Setup: GPU check, clone repo, install Boltz-2", source="""
+        code(title="Setup: GPU check, clone repo, install Boltz-2 (kernel restarts once)", source="""
 import sys
+import os
 import importlib
 import shutil
 import subprocess
 from pathlib import Path
 
 IS_COLAB = "google.colab" in sys.modules
+
+# Must match BOLTZ2_VERSION in src/aidd/co_folding.py. Hardcoded here so the
+# install can happen before we can import the module (the module needs the
+# install to have happened first -- chicken and egg). Keep in sync.
+BOLTZ_VERSION_PIN = "2.1.1"
+
+# Sentinel file on /content. Persists for the lifetime of the runtime but
+# does not survive a hard-disconnect; that is the right scope -- the install
+# IS valid for the lifetime of the runtime.
+SETUP_SENTINEL = Path("/content/_aidd_boltz_setup_done")
 
 if IS_COLAB:
     gpu_ok = subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0
@@ -163,21 +182,34 @@ if IS_COLAB:
             "or use a Personal Access Token via Colab Secrets, then re-run."
         )
 
-    # rdkit must be installed BEFORE we import aidd.co_folding -- the module
-    # has `from rdkit import Chem` at top level, and Colab's default image
-    # doesn't ship rdkit. py3Dmol + scikit-learn + scipy go in the same
-    # install line so the rest of the notebook can import cleanly.
-    !pip install -q rdkit py3Dmol scikit-learn scipy
+    if not SETUP_SENTINEL.exists():
+        # First-run install. One pip line, no defensive pins on numpy /
+        # scipy / sklearn -- Boltz brings them at versions it has tested
+        # against. rdkit + py3Dmol are added because we use them outside
+        # of Boltz (the notebook's evaluation and viewer cells); if Boltz
+        # already pulled them in, pip no-ops on those.
+        print(f"Installing boltz=={BOLTZ_VERSION_PIN} + rdkit + py3Dmol… (~2-3 min on Colab)")
+        !pip install -q boltz=={BOLTZ_VERSION_PIN} rdkit py3Dmol
+        SETUP_SENTINEL.touch()
+        print()
+        print("Install complete. Restarting the Python kernel so the newly")
+        print("installed numpy / scipy / scikit-learn versions take effect.")
+        print()
+        print("→  Once the kernel comes back up, RE-RUN THIS CELL to finish setup.")
+        print("   (Subsequent runs are fast: the sentinel file skips the install.)")
+        os.kill(os.getpid(), 9)
 
+    # Post-install path: the install has happened, the kernel has restarted,
+    # and we are running this cell for the second time. Finish the setup.
     sys.path.insert(0, str(REPO_ROOT / "src"))
     importlib.invalidate_caches()
     from aidd.co_folding import BOLTZ2_VERSION  # noqa: E402
 
-    if not shutil.which("boltz"):
-        print(f"Installing boltz=={BOLTZ2_VERSION} from PyPI…")
-        !pip install -q boltz=={BOLTZ2_VERSION}
+    if BOLTZ2_VERSION != BOLTZ_VERSION_PIN:
+        print(f"⚠  BOLTZ2_VERSION in aidd.co_folding is {BOLTZ2_VERSION!r}, but the "
+              f"install above pinned {BOLTZ_VERSION_PIN!r}. Bump one to match the "
+              f"other and re-run on a fresh runtime.")
 
-    # Probe — fail loudly if the CLI is unimportable (broken deps, missing CUDA libs).
     probe = subprocess.run(["boltz", "--help"], capture_output=True, text=True, timeout=60)
     if probe.returncode != 0:
         raise RuntimeError(
