@@ -422,20 +422,29 @@ Boltz-2 accepts a **pre-computed MSA** via the `msa:` field on the protein chain
 
 ### What this cell does
 
-1. Probes `data/derived/<target>/fold/msa/` for an existing `.a3m` from notebook `01` (ColabFold writes the MSA there as part of its normal output).
-2. If found, uses it directly.
-3. If not, runs `colabfold_batch <fasta> <out> --msa-only` to generate one (~5 min, one-time, writes to the same `fold/msa/` directory so notebook `01` can pick it up too on its own subsequent runs — same idempotency contract).
+Probes three locations in priority order. The first hit wins. Non-canonical hits are **copied to the canonical location** so future runs short-circuit at the first probe:
+
+1. **`data/derived/<target>/fold/msa/<target>.a3m`** — the canonical location. ✅ Hit here means "we've located the MSA before; just use it".
+2. **`data/derived/<target>/fold/*.a3m`** — notebook 01's default output. ColabFold's `colabfold_batch` writes `<input_stem>.a3m` directly in the output directory, not under a `msa/` subdir. If notebook 01 has run for this target, the file lives here.
+3. **`data/derived/<target>/boltz/per_compound/*/boltz_in_*/out/boltz_results_*/msa/*_unpaired_tmp_env/bfd.mgnify30.metaeuk30.smag30.a3m`** — Boltz's own intermediate MSA from any prior per-compound run on this protein. Reusing this avoids generating a new MSA when one already exists somewhere on Drive. We prefer the deeper BFD/MGnify/MetaEuk/SMAG variant over the UniRef-only one.
+
+If none of the three find anything, the genuine fallback installs **ColabFold** (mirroring notebook 01's pinned commit) and runs `colabfold_batch --msa-only` to generate a fresh MSA. The fresh MSA lands in the canonical `fold/msa/<target>.a3m` location.
+
+> ⚠ The ColabFold-install branch of the fallback is **best-effort**: it does not include a kernel restart, so if ColabFold's deps downgrade numpy / scipy / sklearn (the same risk Section 1's setup cell handles via a kernel restart), subsequent cells may fail with cryptic ABI errors. In practice this branch is rarely needed — the probes above usually find an existing MSA. If you hit this branch and subsequent cells break, run the install in Section 1's setup cell and re-run from cell 1.
 
 The MSA file is a few hundred KB to a few MB, lives on Drive, survives across Colab sessions.
 """),
 
-        code(title="Locate or generate the ERK2 protein MSA", source="""
+        code(title="Locate (or generate) the ERK2 protein MSA", source="""
+import shutil
+
 TARGET = "erk2"
-FOLD_DIR = DATA_ROOT / TARGET / "fold"
-MSA_DIR  = FOLD_DIR / "msa"
+FOLD_DIR         = DATA_ROOT / TARGET / "fold"
+MSA_DIR          = FOLD_DIR / "msa"
+TARGET_BOLTZ_DIR = DATA_ROOT / TARGET / "boltz"
+CANONICAL_MSA    = MSA_DIR / f"{TARGET}.a3m"
 
 # Must match notebooks/_build_01_fold_target.py exactly. UniProt P28482.
-# Same string here AND in Section 4 below; do not change one without the other.
 ERK2_SEQUENCE = (
     "MAAAAAAGAGPEMVRGQVFDVGPRYTNLSYIGEGAYGMVCSAYDNLNKVRVAIKKISPFEHQTYCQRTLREIKILLRFRHENIIGINDIIRAPTI"
     "EQMKDVYIVQDLMETDLYKLLKTQHLSNDHICYFLYQILRGLKYIHSANVLHRDLKPSNLLLNTTCDLKICDFGLARVADPDHDHTGFLTEYVA"
@@ -443,15 +452,46 @@ ERK2_SEQUENCE = (
     "SKALDLLDKMLTFNPHKRIEVEQALAHPYLEQYYDPSDEPIAEAPFKFDMELDDLPKEKLKELIFEETARFQPGYRS"
 )
 
-msa_candidates = sorted(MSA_DIR.glob("*.a3m")) if MSA_DIR.exists() else []
-if msa_candidates:
-    MSA_PATH = msa_candidates[0].resolve()
-    print(f"Reusing existing MSA from notebook 01:")
-    print(f"  {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}")
-    print(f"  {MSA_PATH.stat().st_size / 1024:.1f} KB")
+# Probe priority — first hit wins. Non-canonical hits are copied to
+# CANONICAL_MSA so future runs short-circuit at probe #1.
+found, origin = None, None
+
+if CANONICAL_MSA.exists():
+    found, origin = CANONICAL_MSA, "canonical (fold/msa/)"
+elif FOLD_DIR.exists():
+    fold_root = sorted(FOLD_DIR.glob("*.a3m"))
+    if fold_root:
+        found, origin = fold_root[0], "notebook-01 colabfold_batch default (fold/)"
+
+if found is None and TARGET_BOLTZ_DIR.exists():
+    boltz_msas = sorted(TARGET_BOLTZ_DIR.glob(
+        "**/boltz_in_*/out/boltz_results_*/msa/*_unpaired_tmp_env/bfd.mgnify30.metaeuk30.smag30.a3m"
+    ))
+    if boltz_msas:
+        found, origin = boltz_msas[0], "Boltz internal MSA from a prior per-compound run"
+
+if found is not None:
+    if found.resolve() != CANONICAL_MSA.resolve():
+        MSA_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy(found, CANONICAL_MSA)
+        print(f"Found MSA at non-canonical location:")
+        print(f"  source: {pretty_path(found, DATA_ROOT, REPO_ROOT)}")
+        print(f"  origin: {origin}")
+        print(f"  copied to canonical: {pretty_path(CANONICAL_MSA, DATA_ROOT, REPO_ROOT)}")
+    else:
+        print(f"Reusing MSA at canonical location:")
+        print(f"  {pretty_path(CANONICAL_MSA, DATA_ROOT, REPO_ROOT)}")
+    MSA_PATH = CANONICAL_MSA.resolve()
 else:
-    print(f"No .a3m found under {pretty_path(MSA_DIR, DATA_ROOT, REPO_ROOT)}.")
-    print(f"Generating fresh MSA with `colabfold_batch --msa-only`… (~5 min, one-time)")
+    print(f"No .a3m found at canonical (fold/msa/), notebook-01 default (fold/),")
+    print(f"or any boltz/per_compound/.../boltz_in_*/.../msa/ tempdir. Generating fresh…")
+    if not shutil.which("colabfold_batch"):
+        # ColabFold install pinned to notebook 01's verified commit. No kernel
+        # restart afterward -- best-effort path (see markdown note above).
+        COLABFOLD_COMMIT = "de5ab5f795ed95c70a7a9b6a9dc6bb5625016142"  # v1.6.1
+        print(f"  Installing ColabFold {COLABFOLD_COMMIT[:7]} (~3-5 min, one-time)…")
+        !pip install -q --no-warn-conflicts \\
+            "colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold@{COLABFOLD_COMMIT}"
     MSA_DIR.mkdir(parents=True, exist_ok=True)
     fasta_path = MSA_DIR / f"{TARGET}.fasta"
     fasta_path.write_text(f">{TARGET}\\n{ERK2_SEQUENCE}\\n")
@@ -463,15 +503,25 @@ else:
             "Check the cell output above for the actual error; common causes are "
             "MMseqs2 server overload (retry in a few minutes) and a network blip."
         )
-    MSA_PATH = msa_candidates[0].resolve()
-    print(f"Generated MSA: {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}  "
-          f"({MSA_PATH.stat().st_size / 1024:.1f} KB)")
+    generated = msa_candidates[0]
+    if generated.resolve() != CANONICAL_MSA.resolve():
+        shutil.move(str(generated), CANONICAL_MSA)
+    MSA_PATH = CANONICAL_MSA.resolve()
+    print(f"Generated MSA: {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}")
+
+size_kb = MSA_PATH.stat().st_size / 1024
+size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+print(f"\\nMSA_PATH = {pretty_path(MSA_PATH, DATA_ROOT, REPO_ROOT)}  ({size_str})")
 """),
 
         markdown("""
 ### Interpreting the cell output
 
-If notebook `01` has already been run for ERK2 on Drive, you'll see the "Reusing existing MSA" branch — milliseconds, no MMseqs2 query. If notebook `01` has not been run (e.g. fresh checkout), the fallback runs `colabfold_batch` once. Either way, the rest of this notebook gets a path to a `.a3m` it can pass to every Boltz call.
+Three branches you might see:
+
+- **"Reusing MSA at canonical location"** — happiest path. The .a3m is already at `fold/msa/<target>.a3m`, no work to do.
+- **"Found MSA at non-canonical location … copied to canonical"** — we located the MSA in a fallback spot (notebook 01's `fold/` or a Boltz tempdir) and copied it to the canonical path. Future runs hit the first branch.
+- **"Generating fresh …"** — no MSA found anywhere on Drive. Installs ColabFold (if needed) and runs `colabfold_batch --msa-only`. ~5–10 min one-time. The generated MSA lands at the canonical location.
 
 `MSA_PATH` is the variable Sections 5 and 6 below use; it must be set after this cell runs.
 """),
