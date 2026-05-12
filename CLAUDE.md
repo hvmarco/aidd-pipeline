@@ -127,6 +127,27 @@ What 99 does *not* do: redefine concepts that the teaching notebooks already cov
 - Install Linux-only binaries or assume `apt`. The user is on Windows; cross-platform paths only.
 - Re-run an already-completed expensive stage (e.g. re-dock a full library) "to be safe". Check the cached output first; ask before overwriting.
 
+## Step-closing approval gates (mandatory)
+
+For any commit/push that **closes a numbered step** in `_planning/PROJECT_PROPOSAL.md` § *First-week deliverables* — i.e. one that:
+
+- Updates a `notebooks/README.md` status row from anything to `✅ done`, OR
+- Lands the empirical numbers that satisfy a step's done-signal (ROC-AUC, redock RMSD, PoseBusters pass rate, smoke-test outputs, etc.), OR
+- Declares any phase of the 13-step plan "verified",
+
+the lead implementation agent **must stop before `git push`** and post a status update containing:
+
+1. **The empirical findings** (the numbers that close the step, as a short table or bullet list).
+2. **`git diff --stat`** for everything that's about to be pushed.
+3. **The proposed commit message(s)**, verbatim — title plus body.
+4. **A one-line ask**: *"approved to push?"*
+
+Then **wait for an explicit `yes` / `approved` / `push it`** before running `git push`. If the reviewer asks for changes (different message, split commits, hold a README update), apply them and re-post for approval.
+
+Routine intermediate commits during a step build (writing a cell, fixing a typo, tailing a log, debugging an install) **do not** need this gate. They commit freely; the push waits for the end-of-round approval. Planning-doc edits in `_planning/*.md` made by the reviewer follow a separate `--diff` review flow and don't go through this gate either.
+
+**Why this rule exists** (and why it's stricter than the general commit-hygiene rule): step-closing pushes land verified status on the visible branch, embed empirical numbers in commit messages that future reviewers and grant materials will reference, and tell downstream agents what's done. A bad step-closing push (a "verified" row that isn't, wrong numbers in a commit, an architectural concession buried in a feature commit) is expensive to correct after the fact and pollutes the git log. One short pre-push approval turn is cheaper than the alternative.
+
 ## Preferred shape of work
 
 - Small, reviewable steps: lift one piece of course code into `src/aidd/`, write a one-cell smoke test in a notebook, commit, move on. Don't bundle five modules into a single PR-sized change.
