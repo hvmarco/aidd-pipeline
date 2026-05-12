@@ -33,13 +33,15 @@ a separate module if/when it is needed.
 
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import logging
 import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Literal, Sequence, Union
 
 import pandas as pd
 from rdkit import Chem, RDLogger
@@ -168,6 +170,10 @@ def box_from_center_radius(
 # Docking — library
 # ---------------------------------------------------------------------------
 
+_UNSAFE_ID_CHARS = set('/\\:*?"<>|\t\r\n')
+OnFailure = Literal["raise", "skip", "skip_with_guard"]
+
+
 def dock_library(
     receptor: PathLike,
     ligands_sdf: PathLike,
@@ -181,16 +187,28 @@ def dock_library(
     cpu: int | None = None,
     overwrite: bool = False,
     gnina_extra: Sequence[str] = (),
+    progress: bool = True,
+    on_failure: OnFailure = "skip_with_guard",
+    failure_guard_n: int = 5,
 ) -> pd.DataFrame:
     """Dock every ligand in ``ligands_sdf`` into ``receptor`` with gnina.
 
-    Outputs ``out_dir/poses.sdf`` (all poses, all ligands), ``out_dir/gnina.log``
-    (raw stdout/stderr), and ``out_dir/gnina_scores.csv`` (tidy scores table).
-    Returns the scores table.
+    **Resumable per-compound caching.** Each compound is docked in its own
+    gnina subprocess and its outputs land in ``out_dir/per_compound/<id>/``
+    before the next compound starts. If the cell or runtime dies partway
+    through (Colab disconnect, browser close, ``KeyboardInterrupt``), already-
+    completed compounds remain on disk; re-running the function picks them up
+    from cache and only dispatches gnina for the compounds that don't yet
+    have a saved score row. After the loop, the aggregate
+    ``out_dir/poses.sdf`` and ``out_dir/gnina_scores.csv`` are rebuilt from
+    the per-compound store so downstream callers (notebook 03, notebook 04,
+    notebook 06) see the same two files they always have.
 
-    Idempotent: if both ``poses.sdf`` and ``gnina_scores.csv`` already exist
-    under ``out_dir`` we read the cached scores and skip the run, unless
-    ``overwrite=True``.
+    Backward-compatible legacy cache: if ``out_dir`` already holds
+    ``poses.sdf`` + ``gnina_scores.csv`` from a pre-refactor (single-subprocess)
+    run **and** has no ``per_compound/`` sub-directory, the legacy aggregate
+    is honoured as-is and returned unchanged. This is the path that picks up
+    the step-10 ERK2 labelled-subset cache on Google Drive.
 
     Parameters
     ----------
@@ -201,44 +219,369 @@ def dock_library(
         available). ``'none'`` disables CNN and gives Vina/smina behaviour.
     cpu
         Number of CPU threads for gnina. Default ``None`` lets gnina pick.
+    overwrite
+        When True, redock every compound even if a per-compound cache exists.
     gnina_extra
         Extra raw CLI flags appended after the standard arguments.
+    progress
+        Show a tqdm bar over compounds. Off-by-default-friendly for unit tests.
+    on_failure
+        How to react when one compound's gnina exits non-zero:
+
+        - ``"raise"``       — raise immediately on the first failing compound
+                              (the old fail-fast behaviour). Use when you want
+                              an unfamiliar pipeline to error loudly on the
+                              first sign of trouble.
+        - ``"skip"``        — log the failure, write a ``<id>.FAILED`` marker
+                              under ``per_compound/``, keep going. Cached failed
+                              compounds are not retried on subsequent runs.
+        - ``"skip_with_guard"`` (default) — like ``"skip"``, but raise if
+                              ``failure_guard_n`` consecutive *fresh* failures
+                              occur in a row (cached failures from earlier
+                              runs do not count). Catches systemic issues
+                              (broken install, GPU dead, wrong receptor) early
+                              without sacrificing robustness to one-off
+                              compound-specific failures further into the run.
+    failure_guard_n
+        Streak threshold for ``on_failure="skip_with_guard"``. Default 5.
+
+    Outputs in ``out_dir/``
+    ----------------------
+    - ``poses.sdf``           — concatenated successful poses.
+    - ``gnina_scores.csv``    — tidy scores table (one row per pose, successes only).
+    - ``failures.csv``        — one row per failed compound (compound_id,
+                                error_class, error_summary, gnina_log_tail).
+                                Written even when empty.
+    - ``per_compound/<id>/``  — success: ``pose.sdf`` + ``scores.csv`` + ``gnina.log``.
+    - ``per_compound/<id>.FAILED`` — JSON marker for a failed compound. Its
+                                presence tells the cache check "don't retry".
+
+    Notes
+    -----
+    The ``on_failure`` parameter shape is mirrored on
+    :func:`aidd.co_folding.predict_library` so both lanes have the same
+    failure-handling contract.
+
+    To force a retry of a previously-failed compound, delete its
+    ``per_compound/<id>.FAILED`` marker (and the matching ``per_compound/<id>/``
+    directory if you want a clean log) and re-run; the cache check will see
+    no record and re-dock it.
     """
+    if on_failure not in {"raise", "skip", "skip_with_guard"}:
+        raise ValueError(
+            f"on_failure must be 'raise', 'skip', or 'skip_with_guard'; got {on_failure!r}."
+        )
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     poses_sdf = out_dir / "poses.sdf"
     scores_csv = out_dir / "gnina_scores.csv"
-    log_path = out_dir / "gnina.log"
+    failures_csv = out_dir / "failures.csv"
+    per_compound_root = out_dir / "per_compound"
+    inputs_dir = per_compound_root / "_inputs"
 
-    if not overwrite and poses_sdf.exists() and scores_csv.exists():
-        logger.info("Cached docking found at %s; skipping (overwrite=True to redo).", out_dir)
+    if (
+        not overwrite
+        and poses_sdf.exists()
+        and scores_csv.exists()
+        and not per_compound_root.exists()
+    ):
+        logger.info(
+            "Legacy aggregate docking cache found at %s (no per-compound "
+            "store); returning it unchanged.",
+            out_dir,
+        )
         return pd.read_csv(scores_csv)
 
-    g = require_gnina()
-    cmd: list[str] = [
-        str(g),
-        "-r", str(receptor),
-        "-l", str(ligands_sdf),
-        "-o", str(poses_sdf),
-        "--cnn_scoring", cnn_scoring,
-        "--exhaustiveness", str(exhaustiveness),
-        "--num_modes", str(num_modes),
-        "--seed", str(seed),
-        *box.gnina_args(),
-    ]
-    if cpu is not None:
-        cmd += ["--cpu", str(cpu)]
-    cmd += list(gnina_extra)
+    per_compound_root.mkdir(parents=True, exist_ok=True)
+    inputs_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("gnina: %s", " ".join(cmd))
-    with log_path.open("w") as fh:
-        proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(_format_gnina_error(proc.returncode, log_path))
+    splits = _split_input_sdf(Path(ligands_sdf), inputs_dir)
+    if not splits:
+        raise ValueError(f"No molecules parsed from {ligands_sdf}.")
 
-    df = parse_poses_sdf(poses_sdf)
-    df.to_csv(scores_csv, index=False)
+    # Defer require_gnina() until we actually need to dispatch a docking call.
+    # When every compound is already cached (success or failed marker), the
+    # function still has to walk the scope to rebuild aggregates — and doing
+    # that on Windows after a Colab run on Drive is a supported flow. Calling
+    # require_gnina() unconditionally would break it.
+    g: Path | None = None
+
+    iterator = _maybe_tqdm(splits, total=len(splits), desc="gnina dock", enable=progress)
+    n_cached_ok = 0
+    n_cached_failed = 0
+    n_fresh_ok = 0
+    n_fresh_failed = 0
+    consecutive_fresh_failures = 0
+    for compound_id, single_input_sdf in iterator:
+        cdir = per_compound_root / compound_id
+        cpose = cdir / "pose.sdf"
+        cscores = cdir / "scores.csv"
+        clog = cdir / "gnina.log"
+        failed_marker = per_compound_root / f"{compound_id}.FAILED"
+
+        if not overwrite and cscores.exists() and cpose.exists():
+            n_cached_ok += 1
+            consecutive_fresh_failures = 0
+            continue
+        if not overwrite and failed_marker.exists():
+            n_cached_failed += 1
+            continue
+
+        if g is None:
+            g = require_gnina()
+        cdir.mkdir(parents=True, exist_ok=True)
+        cmd: list[str] = [
+            str(g),
+            "-r", str(receptor),
+            "-l", str(single_input_sdf),
+            "-o", str(cpose),
+            "--cnn_scoring", cnn_scoring,
+            "--exhaustiveness", str(exhaustiveness),
+            "--num_modes", str(num_modes),
+            "--seed", str(seed),
+            *box.gnina_args(),
+        ]
+        if cpu is not None:
+            cmd += ["--cpu", str(cpu)]
+        cmd += list(gnina_extra)
+
+        with clog.open("w") as fh:
+            proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
+        if proc.returncode != 0:
+            err_msg = _format_gnina_error(proc.returncode, clog)
+            if on_failure == "raise":
+                raise RuntimeError(err_msg)
+            _persist_failure(
+                failed_marker,
+                compound_id=compound_id,
+                error_class="GninaNonZeroExit",
+                error_summary=f"gnina exited with status {proc.returncode}",
+                gnina_log_tail=_read_log_tail(clog, n=30),
+            )
+            n_fresh_failed += 1
+            consecutive_fresh_failures += 1
+            logger.warning(
+                "gnina failed on compound %s (status %d) — skipping; marker at %s",
+                compound_id, proc.returncode, failed_marker,
+            )
+            if (
+                on_failure == "skip_with_guard"
+                and consecutive_fresh_failures >= failure_guard_n
+            ):
+                raise RuntimeError(
+                    f"gnina has failed on {consecutive_fresh_failures} consecutive "
+                    f"compounds (guard threshold = {failure_guard_n}). This usually "
+                    f"means a systemic problem (broken install, GPU dead, wrong "
+                    f"receptor, missing CUDA library) rather than per-compound "
+                    f"chemistry. Last error:\n\n{err_msg}\n\n"
+                    f"Per-compound markers in {per_compound_root}/*.FAILED; "
+                    f"resolve the root cause, delete the marker files for the "
+                    f"compounds you want to retry, and re-run."
+                )
+            continue
+
+        per_df = parse_poses_sdf(cpose)
+        per_df.to_csv(cscores, index=False)
+        n_fresh_ok += 1
+        consecutive_fresh_failures = 0
+
+    logger.info(
+        "dock_library: %d cached-success, %d cached-failed, %d fresh-success, "
+        "%d fresh-failed (total %d compounds).",
+        n_cached_ok, n_cached_failed, n_fresh_ok, n_fresh_failed, len(splits),
+    )
+
+    df = _aggregate_per_compound(
+        per_compound_root,
+        poses_sdf,
+        scores_csv,
+        scope_ids=[cid for cid, _ in splits],
+    )
+    _aggregate_failures(
+        per_compound_root,
+        failures_csv,
+        scope_ids=[cid for cid, _ in splits],
+    )
     return df
+
+
+def _persist_failure(
+    marker_path: Path,
+    *,
+    compound_id: str,
+    error_class: str,
+    error_summary: str,
+    gnina_log_tail: str,
+) -> None:
+    payload = {
+        "compound_id": compound_id,
+        "error_class": error_class,
+        "error_summary": error_summary,
+        "gnina_log_tail": gnina_log_tail,
+        "timestamp": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    }
+    marker_path.write_text(json.dumps(payload, indent=2))
+
+
+def _read_log_tail(log_path: Path, *, n: int = 30) -> str:
+    if not log_path.exists():
+        return ""
+    try:
+        with log_path.open() as fh:
+            lines = fh.readlines()
+        return "".join(lines[-n:]).rstrip()
+    except OSError:
+        return ""
+
+
+def _split_input_sdf(ligands_sdf: Path, work_dir: Path) -> list[tuple[str, Path]]:
+    """Split a multi-compound SDF into one per-compound SDF under ``work_dir``.
+
+    Returns ``[(compound_id, single_input_sdf_path), ...]``. Idempotent:
+    pre-existing per-compound input files are reused. Compound IDs must be
+    non-empty and free of filesystem-unsafe characters; the per-compound store
+    uses ``compound_id`` directly as a sub-directory name, so the IDs become
+    part of the on-disk layout.
+    """
+    out: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    sup = Chem.SDMolSupplier(str(ligands_sdf), removeHs=False)
+    for i, mol in enumerate(sup):
+        if mol is None:
+            continue
+        cid = (mol.GetProp("_Name") if mol.HasProp("_Name") else "").strip()
+        if not cid:
+            raise ValueError(
+                f"Molecule {i} in {ligands_sdf} has no SDF title (_Name). "
+                "dock_library uses _Name as the compound_id everywhere "
+                "downstream (cache directory, scores row, join key); set a "
+                "unique non-empty title on every input molecule."
+            )
+        bad = sorted({c for c in cid if c in _UNSAFE_ID_CHARS})
+        if bad:
+            raise ValueError(
+                f"compound_id {cid!r} contains filesystem-unsafe characters "
+                f"{bad}. Rename the input compound or sanitise IDs upstream — "
+                "dock_library writes a per-compound subdirectory whose name "
+                "is the compound_id."
+            )
+        if cid in seen:
+            raise ValueError(
+                f"Duplicate compound_id {cid!r} in {ligands_sdf}. IDs must be "
+                "unique; downstream code joins on this column."
+            )
+        seen.add(cid)
+        single = work_dir / f"{cid}.sdf"
+        if not single.exists():
+            w = Chem.SDWriter(str(single))
+            w.write(mol)
+            w.close()
+        out.append((cid, single))
+    return out
+
+
+def _aggregate_per_compound(
+    per_compound_root: Path,
+    poses_sdf: Path,
+    scores_csv: Path,
+    *,
+    scope_ids: Sequence[str],
+) -> pd.DataFrame:
+    """Rebuild aggregate ``poses.sdf`` + ``gnina_scores.csv`` from the per-compound store.
+
+    Filters to ``scope_ids`` so the aggregate reflects the compounds passed
+    into the *current* ``dock_library`` call, not the union of every
+    compound that has ever been docked into this ``out_dir`` (which would
+    surprise downstream callers like notebook 04 reading
+    ``gnina_scores.csv`` directly).
+
+    Concatenation is at the byte level — each per-compound SDF already ends
+    with the ``$$$$\\n`` terminator that RDKit's SDWriter emits, so the
+    resulting file is a valid multi-compound SDF.
+    """
+    score_frames: list[pd.DataFrame] = []
+    pose_paths: list[Path] = []
+    for cid in scope_ids:
+        cdir = per_compound_root / cid
+        cscores = cdir / "scores.csv"
+        cpose = cdir / "pose.sdf"
+        if cscores.exists():
+            score_frames.append(pd.read_csv(cscores))
+        if cpose.exists():
+            pose_paths.append(cpose)
+
+    if not score_frames:
+        empty = pd.DataFrame(columns=[
+            "compound_id", "pose_rank", "affinity", "cnn_score",
+            "cnn_affinity", "cnn_vs", "minimized_rmsd",
+        ])
+        empty.to_csv(scores_csv, index=False)
+        poses_sdf.write_bytes(b"")
+        return empty
+
+    df = pd.concat(score_frames, ignore_index=True)
+    df.to_csv(scores_csv, index=False)
+
+    with poses_sdf.open("wb") as out:
+        for p in pose_paths:
+            out.write(p.read_bytes())
+    return df
+
+
+def _aggregate_failures(
+    per_compound_root: Path,
+    failures_csv: Path,
+    *,
+    scope_ids: Sequence[str],
+) -> pd.DataFrame:
+    """Collect every ``<id>.FAILED`` marker under ``per_compound_root`` for
+    compounds in ``scope_ids`` into a single tidy CSV.
+
+    The output is rebuilt on every call (no append semantics) so it reflects
+    the current scope, not the union of every run that ever wrote into this
+    directory. An empty ``failures.csv`` is still written when no compound
+    failed — a missing file would be ambiguous (did the run not happen, or
+    did everything succeed?).
+    """
+    rows: list[dict] = []
+    for cid in scope_ids:
+        marker = per_compound_root / f"{cid}.FAILED"
+        if not marker.exists():
+            continue
+        try:
+            payload = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            payload = {
+                "compound_id": cid,
+                "error_class": "MarkerParseError",
+                "error_summary": f"Could not parse failure marker: {exc}",
+                "gnina_log_tail": "",
+                "timestamp": "",
+            }
+        rows.append({
+            "compound_id":    payload.get("compound_id", cid),
+            "error_class":    payload.get("error_class", ""),
+            "error_summary":  payload.get("error_summary", ""),
+            "gnina_log_tail": payload.get("gnina_log_tail", ""),
+            "timestamp":      payload.get("timestamp", ""),
+        })
+    df = pd.DataFrame(
+        rows,
+        columns=["compound_id", "error_class", "error_summary", "gnina_log_tail", "timestamp"],
+    )
+    df.to_csv(failures_csv, index=False)
+    return df
+
+
+def _maybe_tqdm(it, *, total: int, desc: str, enable: bool):
+    if not enable:
+        return it
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return it
+    return tqdm(it, total=total, desc=desc)
 
 
 # ---------------------------------------------------------------------------
