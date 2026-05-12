@@ -163,6 +163,12 @@ if IS_COLAB:
             "or use a Personal Access Token via Colab Secrets, then re-run."
         )
 
+    # rdkit must be installed BEFORE we import aidd.co_folding -- the module
+    # has `from rdkit import Chem` at top level, and Colab's default image
+    # doesn't ship rdkit. py3Dmol + scikit-learn + scipy go in the same
+    # install line so the rest of the notebook can import cleanly.
+    !pip install -q rdkit py3Dmol scikit-learn scipy
+
     sys.path.insert(0, str(REPO_ROOT / "src"))
     importlib.invalidate_caches()
     from aidd.co_folding import BOLTZ2_VERSION  # noqa: E402
@@ -180,9 +186,6 @@ if IS_COLAB:
             "Most common cause: a missing CUDA library at import time. "
             "Confirm the runtime is GPU-backed and re-run."
         )
-
-    # py3Dmol + a few small deps for the visualisation + evaluation cells.
-    !pip install -q py3Dmol scikit-learn scipy
 else:
     REPO_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
     sys.path.insert(0, str(REPO_ROOT / "src"))
