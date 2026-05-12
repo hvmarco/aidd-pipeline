@@ -63,7 +63,7 @@ logger = logging.getLogger("aidd.co_folding")
 # PyPI by this version; tighten to a git commit pin if a tagged release ever
 # proves unreliable upstream (the same escape hatch the ColabFold install
 # uses — see feedback_colabfold_install_mirror.md).
-BOLTZ2_VERSION = "2.1.1"
+BOLTZ2_VERSION = "2.2.1"
 BOLTZ2_LAST_VERIFIED: str | None = None  # bumped after each successful Colab smoke-test
 
 PROTEIN_CHAIN_ID = "A"

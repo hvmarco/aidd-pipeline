@@ -64,8 +64,8 @@ After running this notebook you will be able to:
 ## Runtime
 
 - **Setup + Boltz-2 install:** roughly a minute, one-time per Colab runtime (PyPI install). Model weights (~5 GB) download on the first inference call.
-- **5-compound smoke-test:** *measured below in Section 3 — we deliberately do not write a number in this markdown until we have run it once. See `feedback_measure_before_rationale.md` for the rule.*
-- **Full 414-compound library run:** extrapolated from the smoke-test measurement in Section 4.
+- **5-compound smoke-test:** *measured below in Section 4 — we deliberately do not write a number in this markdown until we have run it once. See `feedback_measure_before_rationale.md` for the rule.*
+- **Full 414-compound library run:** extrapolated from the smoke-test measurement in Section 5.
 
 `USE_DRIVE = True` (the default on Colab) writes every per-compound output to Google Drive so a runtime disconnect at compound N of 414 does not lose the work. Re-running picks up where it stopped.
 """),
@@ -124,23 +124,77 @@ This is the operational logic behind the consensus shortlist (notebook `06`): ke
 
 Verify a GPU is attached, clone the repo on Colab, install Boltz-2 from PyPI, and confirm the CLI loads. We follow the same install-discipline rule as ColabFold (notebook `01`): mirror the upstream install verbatim, pin to a specific release, do **not** add defensive torch / CUDA pins. See [`feedback_colabfold_install_mirror.md`](https://github.com/anthropics/feedback-rules) for the history (one hour of debugging caused by over-engineered pins on step 7).
 
-### About the Boltz-2 install — runs in **two passes** with one kernel restart
+### About the Boltz-2 install — mirror upstream, restart the kernel once
 
-Boltz-2 is on PyPI. The install brings several packages that overlap with Colab's defaults (numpy, scipy, scikit-learn, rdkit) at versions Boltz has tested against. Those upgrades change shared libraries that the running Python kernel has **already imported**, leaving the kernel in a half-bumped state where `from sklearn import …` fails with cryptic ABI errors.
+The install command is taken verbatim from [Boltz-2's README](https://github.com/jwohlwend/boltz#installation):
 
-The fix is to **restart the kernel** after installing Boltz so the new versions are picked up cleanly. The setup cell below does this automatically: on the first run it installs Boltz and kills the kernel; you then re-run the cell, the sentinel file says the install already happened, and the cell completes the GPU probe + CLI check.
+```
+pip install boltz[cuda] -U
+```
 
-So the flow is:
+We add a pinned version (`==2.2.1`) so the cached outputs of a screen are reproducible against a specific Boltz release; their `-U` is for end-users tracking latest. To bump the pin: edit `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py), bump `BOLTZ_VERSION_PIN` in the setup cell to match, delete `/content/_aidd_boltz_setup_done`, re-run on a fresh Colab runtime, and on success bump `BOLTZ2_LAST_VERIFIED` to today and commit.
 
-1. **Run the setup cell once.** It installs `boltz==X` + `rdkit` + `py3Dmol`, drops a sentinel file, and kills the Python kernel.
-2. **Wait for Colab to reconnect** (a few seconds — the runtime stays warm; the Python process restarts).
-3. **Re-run the setup cell.** The sentinel is present, so the cell skips the install and finishes with the GPU + CLI probe.
+#### Per-package audit — what comes from where
 
-This pattern is the same one ColabFold's AlphaFold2 notebook uses for the same reason. Do **not** add defensive `pip install` lines for numpy / scikit-learn / scipy on top of the Boltz install — those create exactly the version skew the kernel restart is designed to resolve. See [`feedback_colabfold_install_mirror.md`](#) for the painful precedent on step 7.
+| Package | Boltz 2.2.1 pin (from [pyproject.toml](https://github.com/jwohlwend/boltz/blob/main/pyproject.toml)) | Notebook needs it? | Source |
+|---|---|---|---|
+| `torch` | `>=2.2` (+ `[cuda]` extra) | yes (Boltz inference) | Boltz transitive |
+| `numpy` | `>=1.26,<2.0` | yes | Boltz transitive |
+| `scipy` | `==1.13.1` | yes (`scipy.stats.spearmanr` in evaluation cell) | Boltz transitive |
+| `scikit-learn` | `==1.6.1` | yes (`aidd.scoring.evaluate_scores` uses it) | Boltz transitive |
+| `pandas` | `>=2.2.2` | yes | Boltz transitive |
+| `rdkit` | `>=2024.3.2` | yes (`Chem.SDMolSupplier`) | Boltz transitive |
+| `biopython` | `==1.84` | no (not used in this notebook) | Boltz transitive |
+| `py3Dmol` | not a Boltz dep | yes (Section 6 sanity-check viewer) | **Explicit install** |
+| `matplotlib` | not a Boltz dep | yes (ROC + scatter plots) | **Explicit install** |
+| `seaborn` | not a Boltz dep | yes (theme; one `sns.set_theme()` call) | **Explicit install** |
 
-To bump the pinned Boltz-2 version: edit `BOLTZ2_VERSION` in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py), re-run this notebook on a fresh Colab runtime (delete `/content/_aidd_boltz_setup_done` to force a re-install), and on success bump `BOLTZ2_LAST_VERIFIED` to today and commit.
+That's the principle: install Boltz with `[cuda]`, **do not** layer `numpy / scipy / scikit-learn / rdkit / pandas` defensively (Boltz pins them at exact versions), but **do** explicitly install `py3Dmol / matplotlib / seaborn` because they are notebook-only plotting deps not in Boltz's tree. The two failed Colab attempts on this notebook both stemmed from violating the first half of this principle.
 
-Model weights (~5 GB) are downloaded automatically by the CLI on the first inference call and cached under `~/.boltz/`. Subsequent calls in the same runtime reuse the cache. Across runtime restarts, the weights re-download (1–2 minutes on Colab's network).
+#### Why the kernel restart
+
+Boltz-2's `numpy>=1.26,<2.0` and `scipy==1.13.1` and `scikit-learn==1.6.1` pins **downgrade** Colab's pre-installed versions (Colab's defaults drift forward; Boltz pins backward to its tested set). The downgrade happens after the running Python kernel has already imported the newer numpy/scipy/sklearn, leaving the kernel in a half-bumped state where any later `import sklearn` fails with cryptic ABI errors (the symptom Natallia hit on attempt 2: `No module named 'numpy.char'` inside scipy's array-API shim).
+
+The fix is to kill the Python kernel right after the install. The runtime stays warm; only Python restarts. A `/content/_aidd_boltz_setup_done` sentinel file makes the second pass of the cell skip the install and finish with the GPU + CLI probe.
+
+#### Flow when you run this cell
+
+1. **Run the setup cell once.** It installs `boltz[cuda]==2.2.1 py3Dmol matplotlib seaborn`, drops the sentinel, and kills the Python kernel.
+2. **Wait ~10 s for Colab to reconnect.** The runtime stays warm; the Python process restarts.
+3. **Re-run the setup cell.** The sentinel is present; the cell skips the install and finishes with the GPU + CLI probe + version summary.
+
+#### Expected pass-1 output (first run, before kernel restart)
+
+```
+Tesla T4, 15360 MiB                        # or "NVIDIA A100-SXM4-40GB, 40960 MiB" on Pro+
+Cloning into '/content/aidd-pipeline'...
+...
+Receiving objects: 100% (...), done.
+Installing boltz[cuda]==2.2.1 + py3Dmol + matplotlib + seaborn… (~3-5 min on Colab)
+
+Install complete. Restarting the Python kernel so the newly
+installed numpy / scipy / scikit-learn versions take effect.
+
+→  Once the kernel comes back up, RE-RUN THIS CELL to finish setup.
+   (Subsequent runs are fast: the sentinel file skips the install.)
+```
+
+Then the kernel dies (Colab UI shows "Your session crashed" or "Runtime disconnected" briefly).
+
+#### Expected pass-2 output (after kernel restart, re-run the cell)
+
+```
+Tesla T4, 15360 MiB
+                                            # no clone print — directory exists
+                                            # no install print — sentinel exists
+Repo root      : /content/aidd-pipeline
+Running on     : Colab
+Boltz-2 version: 2.2.1
+```
+
+If you see `ModuleNotFoundError` on `matplotlib` or `seaborn` after pass 2, Colab's defaults have changed — paste the traceback in chat and we'll widen the install line. (Low risk; both packages have been Colab defaults for years.)
+
+Model weights (~GB-scale) and the CCD ligand-chemistry dataset are downloaded by the CLI on the **first** `boltz predict` call, not at install time. The next section (Section 2) explicitly warms that download up so the runtime measurements in Section 4 are clean.
 """),
 
         code(title="Setup: GPU check, clone repo, install Boltz-2 (kernel restarts once)", source="""
@@ -156,7 +210,7 @@ IS_COLAB = "google.colab" in sys.modules
 # Must match BOLTZ2_VERSION in src/aidd/co_folding.py. Hardcoded here so the
 # install can happen before we can import the module (the module needs the
 # install to have happened first -- chicken and egg). Keep in sync.
-BOLTZ_VERSION_PIN = "2.1.1"
+BOLTZ_VERSION_PIN = "2.2.1"
 
 # Sentinel file on /content. Persists for the lifetime of the runtime but
 # does not survive a hard-disconnect; that is the right scope -- the install
@@ -183,13 +237,18 @@ if IS_COLAB:
         )
 
     if not SETUP_SENTINEL.exists():
-        # First-run install. One pip line, no defensive pins on numpy /
-        # scipy / sklearn -- Boltz brings them at versions it has tested
-        # against. rdkit + py3Dmol are added because we use them outside
-        # of Boltz (the notebook's evaluation and viewer cells); if Boltz
-        # already pulled them in, pip no-ops on those.
-        print(f"Installing boltz=={BOLTZ_VERSION_PIN} + rdkit + py3Dmol… (~2-3 min on Colab)")
-        !pip install -q boltz=={BOLTZ_VERSION_PIN} rdkit py3Dmol
+        # Mirror Boltz-2's upstream install line (pip install boltz[cuda] -U,
+        # see https://github.com/jwohlwend/boltz#installation), pinned to our
+        # tested version. The [cuda] extra brings the CUDA-pinned torch wheel.
+        # Boltz brings numpy / scipy / scikit-learn / rdkit / pandas at exact
+        # version pins (see the audit table above) -- DO NOT add them to this
+        # install line, that's the layered-install antipattern that broke the
+        # first two Colab attempts on this notebook.
+        # py3Dmol + matplotlib + seaborn ARE explicit here because they are
+        # notebook plotting deps, not Boltz deps.
+        print(f"Installing boltz[cuda]=={BOLTZ_VERSION_PIN} + py3Dmol + matplotlib + seaborn… "
+              f"(~3-5 min on Colab)")
+        !pip install -q "boltz[cuda]=={BOLTZ_VERSION_PIN}" py3Dmol matplotlib seaborn
         SETUP_SENTINEL.touch()
         print()
         print("Install complete. Restarting the Python kernel so the newly")
@@ -286,7 +345,65 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 """),
 
         markdown("""
-## 2. Inputs — target sequence + the same 414 compounds as notebook 04
+## 2. Warm up Boltz-2 (downloads weights + CCD on first run)
+
+### Background
+
+The Boltz-2 CLI fetches its model weights (~GB-scale) and the [CCD](https://www.wwpdb.org/data/ccd) ligand-chemistry dataset the **first** time `boltz predict` runs in a session. The download is not part of the install — it happens at first inference. Two consequences if we don't surface it explicitly:
+
+- The first compound of any Colab run will be **much slower than steady-state**, and the per-compound runtime in Section 4's smoke-test would be skewed by the weight download.
+- If the download fails (network blip, mirror down), it would fail mid-way through Section 4 rather than at a visible setup step.
+
+So we warm Boltz up here with a tiny throwaway prediction — a 5-residue peptide + a small ligand — that triggers the weight download in **single-sequence mode** (no MSA server query, just to keep this step fast and deterministic). On a healthy runtime this takes a few minutes the first time and a couple of seconds on every subsequent Colab session. Output goes to `/content/_boltz_warmup/`, never to Drive.
+
+This pattern follows the same logic as our resumable-docking design: surface expensive one-time setup as its own visible step so the user sees it complete before kicking off the long loop. The Boltz community's own example notebooks (e.g. AtharvaTilewale's) use a comparable warm-up cell.
+"""),
+
+        code(title="Warm up Boltz-2: tiny prediction triggers weight + CCD download", source="""
+import time
+from pathlib import Path
+
+# Tiny inputs: a 5-residue peptide and the simplest aromatic SMILES.
+# Goal is end-to-end protocol coverage, NOT a meaningful biological result.
+WARMUP_SEQUENCE = "ACDEF"        # 5 amino acids — alanine, cysteine, aspartate, glutamate, phenylalanine
+WARMUP_SMILES   = "c1ccccc1"     # benzene
+WARMUP_DIR      = Path("/content/_boltz_warmup")
+
+if WARMUP_DIR.exists() and (WARMUP_DIR / "metadata.json").exists():
+    print(f"Warm-up cache present at {WARMUP_DIR}; skipping re-run.")
+else:
+    print("Warming up Boltz-2 (downloads model weights + CCD on the first call)…")
+    t0 = time.time()
+    result = predict_complex(
+        sequence=WARMUP_SEQUENCE,
+        smiles=WARMUP_SMILES,
+        output_dir=WARMUP_DIR,
+        compound_id="warmup",
+        use_msa_server=False,  # single-sequence mode -- faster, no MSA-server traffic
+        cache=False,
+    )
+    wall = time.time() - t0
+    print(f"\\nWarm-up complete in {wall/60:.1f} min ({wall:.0f} s).")
+    print(f"  affinity            : {result.affinity:.3f}")
+    print(f"  affinity_probability: {result.affinity_probability:.3f}")
+    print(f"  confidence          : {result.confidence:.3f}")
+    print(f"  iptm                : {result.iptm:.3f}")
+    print(f"  ligand_iptm         : {result.ligand_iptm:.3f}")
+"""),
+
+        markdown("""
+### Interpreting the warm-up output
+
+Two things to confirm before continuing:
+
+1. **The cell completed.** Weight + CCD downloads can take a few minutes on a fresh runtime; on subsequent runtimes the cache is present and the cell is near-instant. If the cell hangs or fails mid-download, check Colab's network indicator and try again on a fresh runtime.
+2. **The numeric fields parse.** `affinity`, `confidence`, `iptm`, `ligand_iptm` should all be real numbers, not `NaN`. NaN values mean the affinity / confidence JSON schema parser is misaligned with Boltz-2's actual output for this version — fix in [`src/aidd/co_folding.py`](../src/aidd/co_folding.py) (`_parse_boltz_outputs`) before continuing.
+
+The numeric values themselves are **meaningless** here — a 5-residue peptide + benzene is not a real binding system. This is purely a protocol-coverage check.
+"""),
+
+        markdown("""
+## 3. Inputs — target sequence + the same 414 compounds as notebook 04
 
 ### Background
 
@@ -372,7 +489,7 @@ ligands_df.head()
 """),
 
         markdown("""
-## 3. Smoke-test — measure per-compound runtime on 5 compounds
+## 4. Smoke-test — measure per-compound runtime on 5 compounds
 
 ### Background
 
@@ -430,7 +547,7 @@ The number to remember from this cell — **steady-state seconds per compound** 
 """),
 
         markdown("""
-## 4. Full library — co-fold all 414 compounds with Boltz-2
+## 5. Full library — co-fold all 414 compounds with Boltz-2
 
 ### Background
 
@@ -481,7 +598,7 @@ A non-zero `n_failed` is not catastrophic — the consensus shortlist downstream
 """),
 
         markdown("""
-## 5. Sanity check — view one predicted complex in 3-D
+## 6. Sanity check — view one predicted complex in 3-D
 
 ### Background
 
@@ -529,7 +646,7 @@ Use the 3-D viewer interactively (drag to rotate, scroll to zoom) before moving 
 """),
 
         markdown("""
-## 6. Evaluation — does Boltz-2 affinity rank actives above inactives?
+## 7. Evaluation — does Boltz-2 affinity rank actives above inactives?
 
 ### Background
 
@@ -658,7 +775,7 @@ The Spearman correlation between Boltz-2 and gnina CNN_affinity is the **diagnos
 
 ### What the numbers cannot tell you
 
-- **Pose quality.** AUC measures ranking; it does not measure whether the predicted complex is sane. Trust the Section 5 viewer for that, and PoseBusters (in notebook `03`) for gnina poses.
+- **Pose quality.** AUC measures ranking; it does not measure whether the predicted complex is sane. Trust the Section 6 viewer for that, and PoseBusters (in notebook `03`) for gnina poses.
 - **Calibration.** Boltz-2 affinity is roughly pIC50-shaped but not a guaranteed thermodynamic predictor. Treat it as a ranking signal, not as an absolute K_d.
 - **Generalisation to a new target.** Numbers here are for ERK2. The pipeline is built to be target-agnostic; running the same notebook against DPYD or KRAS will tell you whether Boltz-2's signal holds beyond kinase chemistry.
 """),
