@@ -129,6 +129,9 @@ from pathlib import Path
 IS_COLAB = "google.colab" in sys.modules
 
 if IS_COLAB:
+    # CPU-only deps not in Colab's default image. pandas / numpy / matplotlib
+    # / seaborn / pyarrow are pre-installed; rdkit + py3Dmol are not.
+    !pip install -q rdkit py3Dmol
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
         !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
