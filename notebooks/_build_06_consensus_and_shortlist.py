@@ -55,7 +55,7 @@ After running this notebook you will be able to:
 
 ## Prerequisites
 
-- Notebook **`04_score_classical`** completed for this target. Specifically: `data/derived/<target>/scoring/scored_poses.parquet` exists.
+- Notebook **`04_score_classical`** completed for this target, **with the cross-validated out-of-fold (OOF) rescorer column on disk**. Specifically: `data/derived/<target>/scoring/scored_poses.parquet` must contain a column named `rescorer_rf_proba_oof`. See `_planning/KNOWN_ISSUES.md` for the open work-item that ships this column. Until that lands, this notebook will raise `KeyError` on the consensus step -- a deliberate guard against ranking on the leaked `rescorer_rf_proba` column (a Random Forest trained on all rows, including its own test fold; gives `AUC = 1.000` when filtered to the held-out set).
 - Notebook **`05_dock_boltz`** completed for this target. Specifically: `data/derived/<target>/boltz/affinity.csv` exists.
 - The gnina poses cache from notebook `04` (`data/derived/<target>/docking/labeled_subset/poses.sdf`) should be present too -- the shortlist SDF copies its 3-D coordinates from there. If it is missing, the notebook still produces `shortlist.csv` and a warning, just no `shortlist.sdf`.
 
@@ -78,6 +78,8 @@ After running this notebook you will be able to:
 | **Inner join** | Keeping only compounds present in both input tables. The other join shapes (left, right, outer) would silently bias the ranking; we use inner-join for the shortlist and report dropped compounds in the coverage table. |
 | **Anti-join** | The opposite: keep compounds in one table that are **not** in the other. We use it to surface "compounds top-X% by lane A that lane B could not score" so they are not invisibly lost. |
 | **Active / Inactive** | The binary label from the labelled training subset (notebook `04`). Available only for compounds in the labelled set; any new screening library will mostly have NaN here, which is fine. |
+| **Out-of-fold (OOF) prediction** | A prediction for compound *X* from a model that was **never shown** *X* during training. The cross-validated way to get an honest per-compound rescorer probability across the whole labelled set. The default rescorer column read by this notebook is `rescorer_rf_proba_oof` written by notebook `04`'s CV step. |
+| **Sign convention** | Whether *higher* or *lower* values of a score mean "better". The two lanes disagree: the rescorer probability is higher-is-stronger; Boltz-2's `boltz_affinity` is `log10(IC50) µM` where **lower** is stronger. `compute_consensus` handles the negation internally via per-lane flags so on-disk files keep their upstream conventions. |
 | **Shortlist** | The final per-compound list after the consensus filter. One row per compound, sorted by `consensus_rank` ascending (1 = best). |
 | **Pose** | A 3-D arrangement of the ligand inside the binding pocket. Each shortlisted compound has one pose carried over from gnina's top-1 (notebook `03`/`04`). |
 """),
@@ -248,6 +250,14 @@ print(f"  shortlist : {pretty_path(SHORTLIST_DIR, DATA_ROOT, REPO_ROOT)}/")
 """),
 
         code(title="Read the two upstream tables", source="""
+# Score-column names (single source of truth -- referenced everywhere below).
+# RESCORER_COL defaults to the OOF column written by notebook 04's CV step.
+# If you intentionally want to inspect the leaked single-fit rescorer column
+# (chemistry inspection only, NEVER for ranking), set RESCORER_COL to
+# 'rescorer_rf_proba' and pass that string to compute_consensus too.
+RESCORER_COL = "rescorer_rf_proba_oof"
+BOLTZ_COL    = "boltz_affinity"
+
 scored = pd.read_parquet(SCORED_POSES)
 scored["compound_id"] = scored["compound_id"].astype(str)
 print(f"scored_poses.parquet  : {len(scored):>5,} rows × {scored.shape[1]} cols")
@@ -260,24 +270,37 @@ print(f"affinity.csv          : {len(affinity):>5,} rows × {affinity.shape[1]} 
 print(f"  columns: {list(affinity.columns)}")
 print()
 
+if RESCORER_COL not in scored.columns:
+    raise KeyError(
+        f"Expected rescorer column {RESCORER_COL!r} not found in scored_poses.parquet. "
+        f"Available rescorer-like columns: "
+        f"{[c for c in scored.columns if c.startswith('rescorer')]}. "
+        "This notebook intentionally reads the cross-validated out-of-fold (OOF) "
+        "column, not the single-fit `rescorer_rf_proba` column which is data-leaked "
+        "(see _planning/KNOWN_ISSUES.md). Re-run notebook 04 after the OOF fix lands."
+    )
+
 # Quick distribution sanity check on the two score columns we will use.
-print("Score-column summary (will be ranked descending; higher = better):")
-print(f"  rescorer_rf_proba (notebook 04): "
-      f"min={scored['rescorer_rf_proba'].min():.3f}  "
-      f"median={scored['rescorer_rf_proba'].median():.3f}  "
-      f"max={scored['rescorer_rf_proba'].max():.3f}")
-print(f"  boltz_affinity    (notebook 05): "
-      f"min={affinity['boltz_affinity'].min():.3f}  "
-      f"median={affinity['boltz_affinity'].median():.3f}  "
-      f"max={affinity['boltz_affinity'].max():.3f}")
+# Note the sign conventions differ between the two lanes; compute_consensus
+# handles the negation internally (see the "Sign convention" key term above
+# and feedback_boltz_affinity_sign.md in project memory).
+print("Score-column summary:")
+print(f"  {RESCORER_COL:24s} (notebook 04, HIGHER = stronger): "
+      f"min={scored[RESCORER_COL].min():.3f}  "
+      f"median={scored[RESCORER_COL].median():.3f}  "
+      f"max={scored[RESCORER_COL].max():.3f}")
+print(f"  {BOLTZ_COL:24s} (notebook 05, LOWER  = stronger): "
+      f"min={affinity[BOLTZ_COL].min():.3f}  "
+      f"median={affinity[BOLTZ_COL].median():.3f}  "
+      f"max={affinity[BOLTZ_COL].max():.3f}")
 """),
 
         markdown("""
 ### What to look for
 
 - Both `compound_id` columns must be **strings** (we coerce above) so the join does not silently drop matches because one side is `int64` and the other is `object`.
-- `rescorer_rf_proba` is a probability in `[0, 1]`. If it is constant or all-NaN, notebook `04`'s training step did not finish.
-- `boltz_affinity` is a real number, roughly in the pIC50 range (a few units either side of zero on the Boltz-2 scale). If it is all-NaN, notebook `05`'s parser is misaligned with the installed Boltz-2 version -- fix in `src/aidd/co_folding.py` before continuing.
+- `rescorer_rf_proba_oof` is an **out-of-fold** probability in `[0, 1]`. *Higher* = the model thinks the compound is more likely to be active. If this column is missing, the upstream `KeyError` above tells you so explicitly -- the notebook will not silently fall back to the leaked `rescorer_rf_proba` column.
+- `boltz_affinity` is `log10(IC50) µM` -- **lower** = stronger binder (a strong binder at IC50 = 10 nM scores around `-2`; a weak binder at IC50 = 10 µM scores around `+1`). This is the opposite direction from the rescorer column; `compute_consensus` negates internally so rank 1 always means "strongest binder by this lane". If `boltz_affinity` is all-NaN, notebook `05`'s parser is misaligned with the installed Boltz-2 version -- fix in `src/aidd/co_folding.py` before continuing.
 
 The exact ranges differ per target; the point is just that both columns vary across the library and neither is degenerate.
 """),
@@ -290,15 +313,16 @@ The exact ranges differ per target; the point is just that both columns vary acr
 `aidd.consensus.compute_consensus` does the actual work in one call:
 
 1. Inner-join on `compound_id`.
-2. Within-lane ranks (`1` = best, descending order on each score).
-3. Top-`top_fraction` flags per lane (default 5%).
-4. Rank product on the joined table.
-5. Filter to compounds top-`top_fraction` by **both** lanes; sort ascending by rank product; assign `consensus_rank` 1-based.
-6. Two anti-join side tables: compounds top-X% by rescorer that Boltz-2 could not score, and vice-versa. These are **not** in the headline shortlist (a chemist asked us for compounds with two-method agreement) but they are visible so nothing is silently lost.
+2. Per-lane signed score (negate `boltz_affinity` because lower = stronger; leave the rescorer probability alone). This is what makes "rank 1" mean "strongest by this lane" regardless of the column's native direction.
+3. Within-lane ranks (`1` = best after sign correction).
+4. Top-`top_fraction` flags per lane (default 5%).
+5. Rank product on the joined table.
+6. Filter to compounds top-`top_fraction` by **both** lanes; sort ascending by rank product; assign `consensus_rank` 1-based.
+7. Two anti-join side tables: compounds top-X% by rescorer that Boltz-2 could not score, and vice-versa. These are **not** in the headline shortlist (a chemist asked us for compounds with two-method agreement) but they are visible so nothing is silently lost.
 
 ### What this cell does
 
-Calls `compute_consensus` with the locked-in defaults from `_planning/PROJECT_PROPOSAL.md`: `top_fraction=0.05` (top 5%), `rescorer_col="rescorer_rf_proba"`, `boltz_col="boltz_affinity"`. Prints the summary so you can see the numbers at every stage of the join + filter.
+Calls `compute_consensus` with the locked-in defaults from `_planning/PROJECT_PROPOSAL.md`: `top_fraction=0.05` (top 5%), `rescorer_col=RESCORER_COL` (the out-of-fold rescorer column), `boltz_col=BOLTZ_COL`. The two `*_lower_is_better` flags fall back to their defaults (`False` for the rescorer, `True` for Boltz) which match what the upstream notebooks write to disk -- if you ever swap `BOLTZ_COL` to `boltz_affinity_probability`, also pass `boltz_lower_is_better=False`. The summary prints every count at every stage of the join + filter, plus the sign conventions actually applied.
 """),
 
         code(title="Apply the consensus rule (top 5% by both, ranked by rank product)", source="""
@@ -307,11 +331,17 @@ TOP_FRACTION = 0.05  # locked default per _planning/PROJECT_PROPOSAL.md §1
 result = compute_consensus(
     scored, affinity,
     top_fraction=TOP_FRACTION,
-    rescorer_col="rescorer_rf_proba",
-    boltz_col="boltz_affinity",
+    rescorer_col=RESCORER_COL,
+    boltz_col=BOLTZ_COL,
+    # Defaults match the on-disk conventions of notebooks 04 and 05; pass
+    # explicitly so a future reader sees the sign discipline at the call site.
+    rescorer_lower_is_better=False,
+    boltz_lower_is_better=True,
 )
 
 print(f"Consensus computed at top_fraction = {TOP_FRACTION:.0%}")
+print(f"  rescorer_col = {RESCORER_COL!r}  (higher = stronger)")
+print(f"  boltz_col    = {BOLTZ_COL!r}     (lower  = stronger; negated internally)")
 print()
 for k, v in result["summary"].items():
     print(f"  {k:30s}: {v}")
@@ -488,7 +518,7 @@ if len(short):
     preview_cols = [
         "consensus_rank", "compound_id", "rank_product",
         "rank_rescorer", "rank_boltz",
-        "rescorer_rf_proba", "boltz_affinity",
+        RESCORER_COL, BOLTZ_COL,
     ]
     if "Active" in short.columns:
         preview_cols.append("Active")
@@ -570,10 +600,11 @@ For the pharmacogenomics + variant-function workflow that becomes the project's 
 
 `src/aidd/consensus.py` is intentionally tiny: one ranking primitive (`rank_product`), one consensus function (`compute_consensus`), one writer (`write_shortlist`). The notebook orchestrates them around two CSV / Parquet reads and a directory of side files. Everything is CPU-only, deterministic, reproducible.
 
-Two design decisions worth carrying forward:
+Three design decisions worth carrying forward:
 
 - **Rank product over z-score combination.** Rank-based aggregators are scale-free across lanes whose scores live on completely different axes. The cost is losing magnitude information at the top of each lane; in exchange we get a method that does not care whether one lane outputs a 0-1 probability and the other an unbounded affinity.
 - **Anti-join side files for partial coverage.** The headline `shortlist.csv` is the inner-join consensus, but the two `*_only_top.csv` files preserve the compounds that only one lane could score. A reviewer asking "what did we drop?" gets a one-file answer, and the chemist can decide whether any of those one-lane-only top hits are worth following up despite missing a consensus partner.
+- **On-disk files keep upstream sign conventions; consumers negate at the boundary.** Boltz-2 writes `boltz_affinity` as `log10(IC50) µM` (lower = stronger); the rescorer writes a probability (higher = stronger). Rather than mutating the on-disk files into a single convention -- which would silently drift from Boltz's own tooling and confuse anyone re-opening the file later -- `compute_consensus` takes per-lane `*_lower_is_better` flags and handles the negation internally. The default values match what notebooks 04 and 05 actually write to disk; if you swap `boltz_col` to `boltz_affinity_probability` (already higher = better), pass `boltz_lower_is_better=False`. The same discipline lives in notebook 05's evaluation cell -- one rule, applied at every consumption point, instead of fighting Boltz's units everywhere.
 
 ### What's next in the pipeline
 

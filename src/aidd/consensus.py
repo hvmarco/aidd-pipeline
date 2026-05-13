@@ -21,27 +21,59 @@ computation happens in notebooks ``04`` and ``05``.
 
 Expected input schemas (the implicit contract with the two upstream notebooks
 -- if either side drifts, the join below will silently shrink or fail noisily,
-so verify these columns exist before debugging the rest)::
+so verify these columns exist before debugging the rest). **Sign conventions
+matter and differ between the two lanes** -- :func:`compute_consensus` handles
+the negation internally via the ``boltz_lower_is_better`` /
+``rescorer_lower_is_better`` flags; the on-disk files keep their upstream
+convention so we never fight the producing tools::
 
     scored_poses.parquet  (notebook 04)
-        compound_id          : str   -- join key
-        rescorer_rf_proba    : float -- in [0, 1], higher = stronger (default
-                                        ranking column; override via
-                                        ``rescorer_col`` to use ``rescorer_xgb_proba``)
-        Active               : int   -- 0/1 label, may be NaN for unlabelled
-                                        compounds; used for the sanity-check
-                                        recall in notebook 06 section 5
+        compound_id              : str   -- join key
+        rescorer_rf_proba_oof    : float -- in [0, 1], HIGHER = stronger.
+                                            Out-of-fold predictions; default
+                                            ranking column. Set by notebook
+                                            04's CV step (see the "open
+                                            rescorer leak" entry in
+                                            _planning/KNOWN_ISSUES.md --
+                                            until that fix lands, this column
+                                            does not exist on disk and
+                                            compute_consensus raises KeyError
+                                            on purpose to prevent runs against
+                                            the leaked alternative).
+        rescorer_rf_proba        : float -- in [0, 1], data-leaked (RF
+                                            trained on all rows, including
+                                            its own test fold). Useful only
+                                            for chemistry inspection, never
+                                            for ranking. Pre-existing column.
+        Active                   : int   -- 0/1 label, may be NaN for
+                                            unlabelled compounds; used for
+                                            the sanity-check recall in
+                                            notebook 06 section 5.
         gnina_cnn_affinity, gnina_affinity, in_random_test_fold,
-        in_scaffold_test_fold, rescorer_xgb_proba  -- carried through
+        in_scaffold_test_fold, rescorer_xgb_proba  -- carried through.
 
     affinity.csv          (notebook 05)
-        compound_id                  : str   -- join key (must match)
-        boltz_affinity               : float -- pIC50-ish, higher = stronger
-                                                (default ranking column;
-                                                override via ``boltz_col`` to use
-                                                ``boltz_affinity_probability``)
-        boltz_affinity_probability   : float -- in [0, 1]
-        boltz_confidence, boltz_iptm, boltz_ligand_iptm  -- carried through
+        compound_id                  : str   -- join key (must match).
+        boltz_affinity               : float -- log10(IC50) µM. **LOWER is
+                                                stronger** -- this is Boltz-2's
+                                                native convention and is
+                                                preserved on disk. Default
+                                                ranking column;
+                                                ``compute_consensus`` negates
+                                                internally when
+                                                ``boltz_lower_is_better=True``
+                                                (the default). See
+                                                feedback_boltz_affinity_sign.md
+                                                in project memory.
+        boltz_affinity_probability   : float -- in [0, 1], higher = more likely
+                                                binder. If you switch
+                                                ``boltz_col`` to this column,
+                                                also pass
+                                                ``boltz_lower_is_better=False``.
+        boltz_confidence, boltz_iptm, boltz_ligand_iptm  -- carried through;
+                                                all in [0, 1], higher = more
+                                                confident. Not used for
+                                                ranking by default.
 """
 
 from __future__ import annotations
@@ -100,24 +132,34 @@ def compute_consensus(
     affinity: pd.DataFrame,
     *,
     top_fraction: float = 0.05,
-    rescorer_col: str = "rescorer_rf_proba",
+    rescorer_col: str = "rescorer_rf_proba_oof",
     boltz_col: str = "boltz_affinity",
     id_col: str = "compound_id",
+    rescorer_lower_is_better: bool = False,
+    boltz_lower_is_better: bool = True,
 ) -> dict:
     """Join the two lanes, apply the consensus filter, return shortlist + side tables.
 
     Parameters
     ----------
     scored_poses
-        Notebook ``04`` output. Must contain ``id_col`` and ``rescorer_col``;
-        higher ``rescorer_col`` = stronger predicted activity.
+        Notebook ``04`` output. Must contain ``id_col`` and ``rescorer_col``.
     affinity
-        Notebook ``05`` output. Must contain ``id_col`` and ``boltz_col``;
-        higher ``boltz_col`` = stronger predicted binding.
+        Notebook ``05`` output. Must contain ``id_col`` and ``boltz_col``.
     top_fraction
         Threshold per lane. A compound enters the shortlist iff it is in the
         top ``top_fraction`` of *both* lanes. Default 0.05 (top 5%) per
         ``_planning/PROJECT_PROPOSAL.md`` section 1.
+    rescorer_lower_is_better, boltz_lower_is_better
+        Per-lane sign convention. The default (``False`` for the rescorer,
+        ``True`` for Boltz) matches the on-disk convention of the two
+        upstream notebooks: rescorer probabilities are higher-is-stronger,
+        Boltz-2's ``boltz_affinity`` is log10(IC50) µM where lower is
+        stronger. Internally we build a signed score per lane (negated when
+        ``lower_is_better=True``) and rank descending, so rank 1 is always
+        the strongest binder regardless of the column's native direction.
+        Override when you swap ``boltz_col`` to ``boltz_affinity_probability``
+        (already higher-is-better -> pass ``boltz_lower_is_better=False``).
 
     Returns
     -------
@@ -128,10 +170,11 @@ def compute_consensus(
         by ``rank_product`` ascending. Has an added ``consensus_rank`` column
         (1-based, 1 = best).
       ``"rescorer_only"`` -- compounds top-X% by rescorer that the Boltz
-        lane could not score (anti-join), ranked by ``rescorer_col``.
+        lane could not score (anti-join), ordered strongest-first.
       ``"boltz_only"`` -- compounds top-X% by Boltz that the rescorer lane
-        could not score (anti-join), ranked by ``boltz_col``.
-      ``"summary"`` -- counts at every stage of the join + filter.
+        could not score (anti-join), ordered strongest-first.
+      ``"summary"`` -- counts at every stage of the join + filter, plus the
+        sign conventions actually applied.
     """
     if not 0 < top_fraction <= 1:
         raise ValueError(f"top_fraction must be in (0, 1]; got {top_fraction}")
@@ -159,8 +202,16 @@ def compute_consensus(
     rescore = rescore.dropna(subset=[rescorer_col])
     boltz = boltz.dropna(subset=[boltz_col])
 
-    rescore["rank_rescorer"] = _rank_descending(rescore[rescorer_col])
-    boltz["rank_boltz"] = _rank_descending(boltz[boltz_col])
+    # Build a signed score per lane so rank 1 = strongest binder regardless
+    # of the column's native direction. Boltz's `boltz_affinity` is
+    # log10(IC50) µM (lower = stronger), so we negate before ranking; the
+    # rescorer probability is already higher-is-stronger and is left alone.
+    # See feedback_boltz_affinity_sign.md for the incident behind this.
+    rescore_score = -rescore[rescorer_col] if rescorer_lower_is_better else rescore[rescorer_col]
+    boltz_score   = -boltz[boltz_col]      if boltz_lower_is_better      else boltz[boltz_col]
+
+    rescore["rank_rescorer"] = _rank_descending(rescore_score)
+    boltz["rank_boltz"]      = _rank_descending(boltz_score)
 
     n_rescorer = len(rescore)
     n_boltz = len(boltz)
@@ -214,6 +265,8 @@ def compute_consensus(
         "n_boltz_only_top": int(len(boltz_only)),
         "rescorer_col": rescorer_col,
         "boltz_col": boltz_col,
+        "rescorer_lower_is_better": bool(rescorer_lower_is_better),
+        "boltz_lower_is_better": bool(boltz_lower_is_better),
     }
 
     return {
