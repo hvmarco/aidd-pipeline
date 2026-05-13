@@ -797,9 +797,21 @@ We report three numbers, all on the **scaffold-grouped 80/20 split** that notebo
 
 1. **ROC-AUC on the scaffold-split held-out fold.** Done signal: > 0.55 indicates the affinity head is picking up real signal on this target.
 2. **EF1%** (enrichment factor at top 1 %). The medicinal-chemistry-relevant number: how concentrated the top 1 % of the Boltz ranking is in true actives.
-3. **Spearman correlation** between Boltz-2 affinity rank and gnina CNN-affinity rank on the 414-compound overlap. Expected: positive but not too high (≈ 0.2–0.5 is ideal). If it's > 0.8 the methods are redundant; if it's < 0 there is a sign / scaling bug.
+3. **Spearman correlation** between Boltz-2 affinity rank and gnina CNN-affinity rank on the 412-compound overlap. Expected: positive in the ≈ 0.2–0.5 range is ideal — methods agree on real signal but disagree enough that consensus adds value. ρ > 0.7 means the methods are largely redundant.
 
 We also report the random-stratified-split AUC alongside, as in notebook `04`, so the scaffold-leakage tax is visible.
+
+### Critical: Boltz-2's affinity sign convention
+
+Boltz-2 writes `affinity_pred_value` as **log10(IC50) µM** units — **lower means stronger binder**. This is the opposite of `gnina_cnn_affinity` / `rescorer_rf_proba` / EF/AUC conventions, which all assume **higher = better**.
+
+If we feed raw `boltz_affinity` straight into `evaluate_scores`, the actives sort to the *bottom* of the ranking and AUC comes back as `1 − real_AUC` (looks broken — e.g. scaffold AUC = 0.35 instead of 0.65). The metrics cell below precomputes
+
+```python
+joined["boltz_affinity_signed"] = -joined["boltz_affinity"]
+```
+
+once, immediately after the join, and uses the signed column for every downstream metric. The raw `boltz_affinity` value in `affinity.csv` stays as Boltz wrote it (so we don't fight upstream's tooling); the negation happens at consumption time. **Any future notebook that joins against `affinity.csv` for rank-based metrics must do the same.** The principle and the incident that motivated it are documented in the project memory's `feedback_boltz_affinity_sign.md`.
 """),
 
         code(title="Join Boltz-2 affinity with notebook 04's scored_poses; compute AUC + EF1% + Spearman", source="""
@@ -820,8 +832,25 @@ joined = scored.merge(library_affinity, on="compound_id", how="inner")
 print(f"Joined on compound_id: {len(joined):,} compounds with both gnina + Boltz-2 scores "
       f"(out of {len(scored):,} in step-10 scored_poses, {len(library_affinity):,} in Boltz affinity).")
 
+# Boltz-2's affinity_pred_value is log10(IC50) µM (lower = stronger binder).
+# Negate once here so every downstream rank-based metric uses the standard
+# "higher = better" convention without having to remember to flip. See the
+# markdown above and feedback_boltz_affinity_sign.md.
+joined["boltz_affinity_signed"] = -joined["boltz_affinity"]
+
 # Build a side-by-side metrics table on both splits, baseline (gnina-CNN-aff)
-# vs Boltz-2 affinity vs Boltz-2 affinity_probability.
+# vs Boltz-2 affinity (signed) vs Boltz-2 affinity_probability vs rescorer.
+#
+# NOTE on the rescorer column: scored_poses.parquet currently records
+# final_rf.predict_proba(X) from a model trained on ALL labelled compounds,
+# including those in the test fold. When we filter to test-fold here and
+# compute AUC, we are testing the model on its own training data -- the
+# resulting AUC = 1.000 is a data leak, NOT a real performance number. The
+# honest scaffold AUC for the rescorer (from notebook 04's own held-out
+# evaluation) is 0.66. See _planning/KNOWN_ISSUES.md for the fix scope.
+# Until notebook 04 saves train-fold-only OOF predictions, treat the
+# rescorer row of this table as decorative -- do not compare Boltz-2 against
+# 1.000 in any reporting context.
 rows = []
 for split_label, fold_col in [
     ("random stratified", "in_random_test_fold"),
@@ -832,11 +861,11 @@ for split_label, fold_col in [
     rows += [
         {"split": split_label, "method": "gnina CNN_affinity (baseline)",
          **evaluate_scores(y, held["gnina_cnn_affinity"].to_numpy())},
-        {"split": split_label, "method": "Boltz-2 affinity",
-         **evaluate_scores(y, held["boltz_affinity"].to_numpy())},
+        {"split": split_label, "method": "Boltz-2 affinity (sign-corrected)",
+         **evaluate_scores(y, held["boltz_affinity_signed"].to_numpy())},
         {"split": split_label, "method": "Boltz-2 affinity_probability",
          **evaluate_scores(y, held["boltz_affinity_probability"].to_numpy())},
-        {"split": split_label, "method": "rescorer RF (notebook 04)",
+        {"split": split_label, "method": "rescorer RF (LEAKED — see comment)",
          **evaluate_scores(y, held["rescorer_rf_proba"].to_numpy())},
     ]
 metrics = pd.DataFrame(rows)
@@ -856,9 +885,9 @@ for ax, (split_label, fold_col) in zip(axes, [
     y = held["Active"].astype(int).to_numpy()
     for label, score_col, colour in [
         ("gnina CNN_affinity (baseline)",  "gnina_cnn_affinity",        "tab:gray"),
-        ("Boltz-2 affinity",               "boltz_affinity",            "tab:green"),
+        ("Boltz-2 affinity (sign-corrected)", "boltz_affinity_signed",  "tab:green"),
         ("Boltz-2 binder probability",     "boltz_affinity_probability","tab:olive"),
-        ("Rescorer RF (notebook 04)",      "rescorer_rf_proba",         "tab:blue"),
+        ("Rescorer RF (LEAKED)",           "rescorer_rf_proba",         "tab:blue"),
     ]:
         s = held[score_col].to_numpy()
         fpr, tpr = roc_points(y, s)
@@ -877,24 +906,26 @@ plt.show()
 """),
 
         code(title="Method-method agreement: Spearman correlation between Boltz-2 and gnina rankings", source="""
-rho, pval = spearmanr(joined["boltz_affinity"], joined["gnina_cnn_affinity"])
-rho_rf, pval_rf = spearmanr(joined["boltz_affinity"], joined["rescorer_rf_proba"])
+rho, pval = spearmanr(joined["boltz_affinity_signed"], joined["gnina_cnn_affinity"])
+rho_rf, pval_rf = spearmanr(joined["boltz_affinity_signed"], joined["rescorer_rf_proba"])
 
-print(f"Boltz-2 affinity  vs  gnina CNN_affinity  : Spearman ρ = {rho:.3f}  (p = {pval:.1e}, n = {len(joined)})")
-print(f"Boltz-2 affinity  vs  notebook-04 RF score: Spearman ρ = {rho_rf:.3f}  (p = {pval_rf:.1e})")
+print(f"Boltz-2 (sign-corrected)  vs  gnina CNN_affinity  : Spearman ρ = {rho:+.3f}  (p = {pval:.1e}, n = {len(joined)})")
+print(f"Boltz-2 (sign-corrected)  vs  rescorer RF (LEAKED): Spearman ρ = {rho_rf:+.3f}  (p = {pval_rf:.1e})")
 print()
-print("Interpretation guide:")
+print("Interpretation guide (Boltz-2 has been sign-corrected so positive correlation means agreement):")
 print("  ρ in [0.2, 0.5]  : methods agree on real signal but disagree enough that consensus adds value (ideal).")
 print("  ρ > 0.7          : methods are largely redundant — consensus would not narrow the shortlist much.")
-print("  ρ < 0            : sign / scaling bug or genuinely orthogonal signal (rare; investigate).")
+print("  ρ < 0            : disagreement after sign-correction — investigate either the sign convention or the data join.")
 
-# Scatter for visual confirmation.
+# Scatter for visual confirmation. y-axis is the sign-corrected affinity
+# (negated boltz_affinity) so both axes share the same "higher = stronger"
+# convention -- positive correlation visible as a diagonal.
 fig, ax = plt.subplots(figsize=(6, 6), dpi=110)
-ax.scatter(joined["gnina_cnn_affinity"], joined["boltz_affinity"],
+ax.scatter(joined["gnina_cnn_affinity"], joined["boltz_affinity_signed"],
            c=joined["Active"].astype(int), cmap="coolwarm", alpha=0.7, s=20)
 ax.set_xlabel("gnina CNN_affinity  (higher → stronger by gnina)")
-ax.set_ylabel("Boltz-2 affinity  (higher → stronger by Boltz-2)")
-ax.set_title(f"Method-method scatter (ρ = {rho:.3f})\\nblue = active, red = inactive")
+ax.set_ylabel("Boltz-2 affinity, sign-corrected  (higher → stronger by Boltz-2)")
+ax.set_title(f"Method-method scatter (ρ = {rho:+.3f})\\nblue = active, red = inactive")
 plt.tight_layout()
 plt.show()
 """),
@@ -902,7 +933,7 @@ plt.show()
         markdown("""
 ### How to read the evaluation result
 
-The **scaffold-split AUC for Boltz-2 affinity** is the headline number for this notebook. The done signal is:
+The **scaffold-split AUC for Boltz-2 affinity (sign-corrected)** is the headline number for this notebook. The done signal is:
 
 > **Boltz-2 scaffold-split AUC > 0.55** on the held-out fold = the affinity head is picking up real, generalisable signal for this target.
 
@@ -912,12 +943,18 @@ Three honest cases the numbers can land in:
 - **Boltz ≈ 0.5 and rescorer > 0.6**: the per-target rescorer wins decisively. Note in the recap; consensus on this target reduces to "trust the rescorer" because Boltz-2's signal is too weak to add information.
 - **Boltz > 0.6 and rescorer ≈ 0.6 and Spearman ρ < 0.3**: Boltz-2 is finding signal the rescorer is missing. Consensus will produce a smaller, more conservative shortlist than either alone — the textbook win case for combining independent methods.
 
-The Spearman correlation between Boltz-2 and gnina CNN_affinity is the **diagnostic for method independence**. If it lands above 0.7, the two methods are too redundant for consensus to help (notebook `06` will still run but the consensus list will be close to a single-method top-N). The same scatter against the per-target RF rescorer tells you whether the learned rescorer captures different signal than Boltz-2 — usually yes, because the rescorer uses IFP features the co-folding model does not.
+The Spearman correlation between sign-corrected Boltz-2 affinity and gnina CNN_affinity is the **diagnostic for method independence**. If it lands above 0.7, the two methods are too redundant for consensus to help (notebook `06` will still run but the consensus list will be close to a single-method top-N).
+
+### About the rescorer's leaked AUC
+
+`scored_poses.parquet` from notebook `04` records `rescorer_rf_proba` as the prediction of a Random Forest trained on the *full* labelled subset (including the test-fold compounds). When this notebook filters to the test fold and computes AUC on that column, the model is being tested on its own training data — the resulting AUC = 1.000 is a **data leak**, not a real performance number. The honest scaffold AUC for the rescorer (from notebook `04`'s own held-out evaluation) is **0.66**.
+
+**Do not compare Boltz-2 against the 1.000 number** in any reporting context. The rescorer row of the metrics table above is decorative until notebook `04` is fixed to save train-fold-only OOF predictions in a separate column. See `_planning/KNOWN_ISSUES.md` for the fix scope.
 
 ### What the numbers cannot tell you
 
 - **Pose quality.** AUC measures ranking; it does not measure whether the predicted complex is sane. Trust the Section 7 viewer for that, and PoseBusters (in notebook `03`) for gnina poses.
-- **Calibration.** Boltz-2 affinity is roughly pIC50-shaped but not a guaranteed thermodynamic predictor. Treat it as a ranking signal, not as an absolute K_d.
+- **Calibration.** Boltz-2 affinity is in log10(IC50) µM units but is not a guaranteed thermodynamic predictor. Treat it as a ranking signal, not as an absolute IC50.
 - **Generalisation to a new target.** Numbers here are for ERK2. The pipeline is built to be target-agnostic; running the same notebook against DPYD or KRAS will tell you whether Boltz-2's signal holds beyond kinase chemistry.
 """),
 
