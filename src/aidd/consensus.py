@@ -2,16 +2,34 @@
 
 Joins the per-target classical-rescorer output (notebook ``04`` ->
 ``scored_poses.parquet``) with the Boltz-2 co-folded affinity output
-(notebook ``05`` -> ``affinity.csv``), applies the *top-X% by both lanes*
-intersection filter, and ranks survivors by **rank product** (geometric mean
-of the two within-lane ranks; Wang & Wang 2001 *J. Chem. Inf. Comput. Sci.*
-**41**, 1422; Houston & Walkinshaw 2013 *J. Chem. Inf. Model.* **53**, 384).
+(notebook ``05`` -> ``affinity.csv``) and applies one of two consensus
+filters (selected via ``filter_method``):
+
+- ``"intersection"`` (default) -- compounds passing top-X% in **both** lanes,
+  ordered by rank product. Strict; correct when the two lanes agree on real
+  signal (Spearman rho between lanes is in the [0.2, 0.5] band or higher).
+  Empty by construction when lanes disagree.
+- ``"rank_product_topk"`` -- top K = ceil(top_fraction x N_joined) compounds
+  by rank product across the full joined cohort. No per-lane gating.
+  Lenient; correct when lanes have low correlation (rho < ~0.15) and the
+  intersection would be empty or near-random.
+
+Both methods rank survivors by rank product (geometric mean of the two
+within-lane ranks; Wang & Wang 2001 *J. Chem. Inf. Comput. Sci.* **41**,
+1422; Houston & Walkinshaw 2013 *J. Chem. Inf. Model.* **53**, 384). Note
+on rank-product behaviour worth knowing before relying on it: the geometric
+mean does **not** penalise extreme cross-lane disagreement as much as you
+might expect. A compound at rank 1 in lane A and rank N in lane B has
+``rp = sqrt(N)``, which beats a compound at rank N/2 in both lanes
+(``rp = N/2``) for any N > 4. Strong-in-one-lane compounds out-rank
+moderate-in-both-lanes compounds. Whether this is desirable depends on
+what you are triaging for.
 
 Public entry points:
 
 - :func:`compute_consensus` -- joins the two score tables, computes ranks +
-  rank-product, returns the inner-join shortlist plus two anti-join side
-  tables for compounds that only one lane could score.
+  rank-product, returns the shortlist (per ``filter_method``) plus two
+  anti-join side tables for compounds that only one lane could score.
 - :func:`write_shortlist` -- emits ``shortlist.sdf`` (one chosen pose per
   compound, picked from the gnina ``poses.sdf``) and ``shortlist.csv``
   (the same data minus 3-D coordinates).
@@ -80,7 +98,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Literal, Union
 
 import numpy as np
 import pandas as pd
@@ -137,6 +155,7 @@ def compute_consensus(
     id_col: str = "compound_id",
     rescorer_lower_is_better: bool = False,
     boltz_lower_is_better: bool = True,
+    filter_method: Literal["intersection", "rank_product_topk"] = "intersection",
 ) -> dict:
     """Join the two lanes, apply the consensus filter, return shortlist + side tables.
 
@@ -147,8 +166,8 @@ def compute_consensus(
     affinity
         Notebook ``05`` output. Must contain ``id_col`` and ``boltz_col``.
     top_fraction
-        Threshold per lane. A compound enters the shortlist iff it is in the
-        top ``top_fraction`` of *both* lanes. Default 0.05 (top 5%) per
+        Threshold (per lane for ``"intersection"``; size fraction for
+        ``"rank_product_topk"``). Default 0.05 (top 5%) per
         ``_planning/PROJECT_PROPOSAL.md`` section 1.
     rescorer_lower_is_better, boltz_lower_is_better
         Per-lane sign convention. The default (``False`` for the rescorer,
@@ -160,22 +179,45 @@ def compute_consensus(
         the strongest binder regardless of the column's native direction.
         Override when you swap ``boltz_col`` to ``boltz_affinity_probability``
         (already higher-is-better -> pass ``boltz_lower_is_better=False``).
+    filter_method
+        Which consensus rule to apply:
+
+        - ``"intersection"`` (default, backward-compatible): a compound enters
+          the shortlist iff it is in the top ``top_fraction`` by **both**
+          lanes. Strict; correct when the two lanes agree on real signal
+          (cross-lane Spearman rho in roughly the [0.2, 0.5] band or higher).
+          Empty by construction when lanes disagree.
+        - ``"rank_product_topk"``: take the top
+          K = ``ceil(top_fraction * n_joined)`` compounds by ``rank_product``
+          across the full joined cohort. No per-lane gating; the
+          rank-product itself is the consensus score. Lenient; the right
+          choice when lanes have low correlation (``rho`` near zero) and
+          the intersection would be empty or near-random size. Note:
+          rank product does not penalise extreme cross-lane disagreement
+          as strongly as you might expect (see the module docstring).
 
     Returns
     -------
     dict with keys:
       ``"joined"`` -- inner-join DataFrame on ``id_col`` with both scores,
-        within-lane ranks, top-X% flags, ``rank_product``, ``made_shortlist``.
+        within-lane ranks, per-lane top-X% flags, ``rank_product``,
+        ``made_shortlist``.
       ``"shortlist"`` -- compounds with ``made_shortlist == True``, sorted
         by ``rank_product`` ascending. Has an added ``consensus_rank`` column
         (1-based, 1 = best).
       ``"rescorer_only"`` -- compounds top-X% by rescorer that the Boltz
-        lane could not score (anti-join), ordered strongest-first.
-      ``"boltz_only"`` -- compounds top-X% by Boltz that the rescorer lane
-        could not score (anti-join), ordered strongest-first.
+        lane could not score (anti-join), ordered strongest-first. The
+        per-lane top-X% definition is the same regardless of
+        ``filter_method`` -- side files are diagnostic, not the headline.
+      ``"boltz_only"`` -- symmetric.
       ``"summary"`` -- counts at every stage of the join + filter, plus the
-        sign conventions actually applied.
+        sign conventions and ``filter_method`` actually applied.
     """
+    if filter_method not in ("intersection", "rank_product_topk"):
+        raise ValueError(
+            f"filter_method must be 'intersection' or 'rank_product_topk'; "
+            f"got {filter_method!r}"
+        )
     if not 0 < top_fraction <= 1:
         raise ValueError(f"top_fraction must be in (0, 1]; got {top_fraction}")
 
@@ -222,9 +264,20 @@ def compute_consensus(
 
     joined = rescore.merge(boltz, on=id_col, how="inner")
     joined["rank_product"] = rank_product(joined["rank_rescorer"], joined["rank_boltz"])
-    joined["made_shortlist"] = (
-        joined["in_top_rescorer"].astype(bool) & joined["in_top_boltz"].astype(bool)
-    )
+
+    if filter_method == "intersection":
+        joined["made_shortlist"] = (
+            joined["in_top_rescorer"].astype(bool) & joined["in_top_boltz"].astype(bool)
+        )
+        k_topk = None
+    else:  # filter_method == "rank_product_topk"
+        # Pick the K compounds with the lowest rank product across the full
+        # joined cohort. Tie-breaking via rank(method="first") gives a stable
+        # row count of exactly K (no surprise inflation when several compounds
+        # share the threshold rank-product value).
+        k_topk = max(1, int(np.ceil(len(joined) * top_fraction)))
+        rp_position = joined["rank_product"].rank(method="first")
+        joined["made_shortlist"] = rp_position <= k_topk
 
     shortlist = (
         joined[joined["made_shortlist"]]
@@ -255,9 +308,11 @@ def compute_consensus(
         "n_boltz_only_universe": int(len(boltz_ids - rescorer_ids)),
         "n_dropped_nan_rescorer": n_dropped_nan_rescorer,
         "n_dropped_nan_boltz": n_dropped_nan_boltz,
+        "filter_method": str(filter_method),
         "top_fraction": float(top_fraction),
         "cut_rescorer": int(cut_rescorer),
         "cut_boltz": int(cut_boltz),
+        "k_topk": int(k_topk) if k_topk is not None else None,
         "n_top_rescorer": int(rescore["in_top_rescorer"].sum()),
         "n_top_boltz": int(boltz["in_top_boltz"].sum()),
         "n_shortlist": int(len(shortlist)),
