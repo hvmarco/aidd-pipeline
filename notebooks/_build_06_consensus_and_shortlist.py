@@ -592,6 +592,112 @@ For a more thorough per-compound triage, open the SDF directly in PyMOL or the V
 """),
 
         markdown("""
+## 8 - Step-closure summary
+
+### Background
+
+A single consolidated dump of every empirical number this notebook produced -- the consensus-filter counts, the active-recall sanity check, and the SDF / CSV write info. This cell exists for two reasons:
+
+1. **Audit trail.** A reviewer (collaborator, professor, grant funder) opening the saved notebook reads the headline result without scrolling through seven sections.
+2. **Pipeline closure record.** The numbers in this dump are what land in the commit message body that closes step 12 of `_planning/PROJECT_PROPOSAL.md` § 7, and in the `notebooks/README.md` status row for this notebook.
+
+If you re-run with a different `top_fraction` (say `0.10` instead of `0.05`), every number below reflects the new setting automatically -- a chemist can scan three runs at three thresholds and pick the shortlist size that matches their wet-lab budget.
+"""),
+
+        code(title="Closure summary -- consolidated empirical findings", source="""
+import json
+
+closure_findings = {
+    "target": TARGET,
+    "consensus_settings": {
+        "top_fraction": TOP_FRACTION,
+        "rescorer_col": RESCORER_COL,
+        "boltz_col": BOLTZ_COL,
+        "rescorer_lower_is_better": result["summary"]["rescorer_lower_is_better"],
+        "boltz_lower_is_better":    result["summary"]["boltz_lower_is_better"],
+    },
+    "join_coverage": {
+        "n_rescorer_total":         result["summary"]["n_rescorer_total"],
+        "n_boltz_total":            result["summary"]["n_boltz_total"],
+        "n_intersection":           result["summary"]["n_intersection"],
+        "n_rescorer_only_universe": result["summary"]["n_rescorer_only_universe"],
+        "n_boltz_only_universe":    result["summary"]["n_boltz_only_universe"],
+        "n_dropped_nan_rescorer":   result["summary"]["n_dropped_nan_rescorer"],
+        "n_dropped_nan_boltz":      result["summary"]["n_dropped_nan_boltz"],
+    },
+    "consensus_filter": {
+        "cut_rescorer":          result["summary"]["cut_rescorer"],
+        "cut_boltz":             result["summary"]["cut_boltz"],
+        "n_top_rescorer":        result["summary"]["n_top_rescorer"],
+        "n_top_boltz":           result["summary"]["n_top_boltz"],
+        "n_shortlist":           result["summary"]["n_shortlist"],
+        "n_rescorer_only_top":   result["summary"]["n_rescorer_only_top"],
+        "n_boltz_only_top":      result["summary"]["n_boltz_only_top"],
+    },
+    "shortlist_outputs": {
+        "n_csv_written":      write_info["n_csv_written"],
+        "n_sdf_written":      write_info["n_sdf_written"],
+        "shortlist_csv_path": str(SHORTLIST_CSV.relative_to(REPO_ROOT))
+                              if SHORTLIST_CSV.is_relative_to(REPO_ROOT)
+                              else str(SHORTLIST_CSV),
+        "shortlist_sdf_path": str(SHORTLIST_SDF.relative_to(REPO_ROOT))
+                              if SHORTLIST_SDF.is_relative_to(REPO_ROOT)
+                              else str(SHORTLIST_SDF),
+    },
+}
+
+# Active-recall sanity (only meaningful when the upstream cohort carries
+# Active labels -- production library screens against new chemistry will
+# legitimately have None here).
+if "Active" in joined.columns and joined["Active"].notna().any():
+    labelled        = joined[joined["Active"].notna()]
+    n_actives_total = int(labelled["Active"].astype(int).sum())
+    n_actives_short = int(short["Active"].fillna(0).astype(int).sum()) if len(short) else 0
+    pick_fraction   = (len(short) / len(labelled)) if len(labelled) else 0.0
+    expected_random = n_actives_total * pick_fraction
+    recall          = (n_actives_short / n_actives_total) if n_actives_total else None
+    enrichment      = (n_actives_short / expected_random) if expected_random > 0 else None
+    closure_findings["active_recall_sanity"] = {
+        "n_labelled":              int(len(labelled)),
+        "n_actives_total":         n_actives_total,
+        "n_actives_in_shortlist":  n_actives_short,
+        "active_recall":           round(recall, 4) if recall is not None else None,
+        "expected_random_actives": round(expected_random, 2),
+        "enrichment_vs_random":    round(enrichment, 2) if enrichment is not None else None,
+    }
+else:
+    closure_findings["active_recall_sanity"] = None
+
+print(json.dumps(closure_findings, indent=2))
+print()
+
+# Human-readable headline.
+ar = closure_findings["active_recall_sanity"]
+n_short = closure_findings["consensus_filter"]["n_shortlist"]
+pct = int(round(TOP_FRACTION * 100))
+if ar is not None and ar["n_actives_total"] > 0:
+    rec_str = f"{ar['active_recall']:.1%}" if ar['active_recall'] is not None else "n/a"
+    enr_str = f"{ar['enrichment_vs_random']:.1f}x" if ar['enrichment_vs_random'] is not None else "n/a"
+    print(f"Headline: top-{pct}% intersection shortlist = {n_short} compounds, "
+          f"recovers {ar['n_actives_in_shortlist']} / {ar['n_actives_total']} known actives "
+          f"({rec_str}); {enr_str} enrichment vs random.")
+else:
+    print(f"Headline: top-{pct}% intersection shortlist = {n_short} compounds. "
+          "(Cohort carries no Active labels -- active-recall sanity skipped; "
+          "shortlist judged only by wet-lab follow-up.)")
+"""),
+
+        markdown("""
+### How to read this cell
+
+Three things to verify against the project's done-signal for step 12 (`_planning/PROJECT_PROPOSAL.md` § 7):
+
+1. **`consensus_settings.rescorer_col == "rescorer_rf_proba_oof"`** and **`boltz_lower_is_better == True`** -- confirms the leak guard cleared and the sign discipline applied. If either is wrong the consensus numbers below are not trustworthy.
+2. **`consensus_filter.n_shortlist`** -- the headline size of the wet-lab handoff. Tells you in one number how big the chemist's order list is.
+3. **`active_recall_sanity.enrichment_vs_random`** -- the consensus enrichment factor on labelled compounds. Above ~3x means the two-lane intersection is concentrating known actives at meaningfully better than chance; near 1x means consensus is not adding signal on this target. The done-signal in the project proposal is "respectable fraction of labelled actives" without a fixed threshold, so the right framing is honest reporting of whatever number this cell prints.
+"""),
+
+        markdown("""
 ## Recap
 
 ### Biomedical takeaway
