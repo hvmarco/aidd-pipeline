@@ -55,7 +55,7 @@ After running this notebook you will be able to:
 
 ## Prerequisites
 
-- Notebook **`04_score_classical`** completed for this target, **with the cross-validated out-of-fold (OOF) rescorer column on disk**. Specifically: `data/derived/<target>/scoring/scored_poses.parquet` must contain a column named `rescorer_rf_proba_oof`. See `_planning/KNOWN_ISSUES.md` for the open work-item that ships this column. Until that lands, this notebook will raise `KeyError` on the consensus step -- a deliberate guard against ranking on the leaked `rescorer_rf_proba` column (a Random Forest trained on all rows, including its own test fold; gives `AUC = 1.000` when filtered to the held-out set).
+- Notebook **`04_score_classical`** completed for this target. Specifically: `data/derived/<target>/scoring/scored_poses.parquet` exists and contains the cross-validated out-of-fold column `rescorer_rf_proba_oof` (shipped in commit `d84565c`). The notebook reads that column, **not** the legacy `rescorer_rf_proba`, which was a Random Forest trained on all rows including its own test fold and gave `AUC = 1.000` when filtered to held-out compounds; `compute_consensus()` raises `KeyError` if `rescorer_rf_proba_oof` is missing rather than silently falling back to the leaked column.
 - Notebook **`05_dock_boltz`** completed for this target. Specifically: `data/derived/<target>/boltz/affinity.csv` exists.
 - The gnina poses cache from notebook `04` (`data/derived/<target>/docking/labeled_subset/poses.sdf`) should be present too -- the shortlist SDF copies its 3-D coordinates from there. If it is missing, the notebook still produces `shortlist.csv` and a warning, just no `shortlist.sdf`.
 
@@ -251,10 +251,13 @@ print(f"  shortlist : {pretty_path(SHORTLIST_DIR, DATA_ROOT, REPO_ROOT)}/")
 
         code(title="Read the two upstream tables", source="""
 # Score-column names (single source of truth -- referenced everywhere below).
-# RESCORER_COL defaults to the OOF column written by notebook 04's CV step.
-# If you intentionally want to inspect the leaked single-fit rescorer column
-# (chemistry inspection only, NEVER for ranking), set RESCORER_COL to
-# 'rescorer_rf_proba' and pass that string to compute_consensus too.
+# RESCORER_COL is the cross-validated out-of-fold column shipped by notebook
+# 04 in commit d84565c: every compound's prediction comes from a model that
+# never saw it during training. Notebook 04 also still writes the legacy
+# single-fit columns (`rescorer_rf_proba`, `rescorer_xgb_proba`) for
+# chemistry-inspection use, but those are data-leaked and must NEVER be
+# used for ranking -- if you ever override RESCORER_COL to the legacy name,
+# you will get AUC = 1.000 on labelled folds and meaningless consensus.
 RESCORER_COL = "rescorer_rf_proba_oof"
 BOLTZ_COL    = "boltz_affinity"
 
@@ -276,8 +279,9 @@ if RESCORER_COL not in scored.columns:
         f"Available rescorer-like columns: "
         f"{[c for c in scored.columns if c.startswith('rescorer')]}. "
         "This notebook intentionally reads the cross-validated out-of-fold (OOF) "
-        "column, not the single-fit `rescorer_rf_proba` column which is data-leaked "
-        "(see _planning/KNOWN_ISSUES.md). Re-run notebook 04 after the OOF fix lands."
+        "column, not the single-fit `rescorer_rf_proba` column which is data-leaked. "
+        "If your scored_poses.parquet is from before commit d84565c, re-run notebook "
+        "04 to regenerate it with the OOF columns."
     )
 
 # Quick distribution sanity check on the two score columns we will use.
