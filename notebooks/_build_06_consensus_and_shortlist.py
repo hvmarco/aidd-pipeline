@@ -698,6 +698,148 @@ Three things to verify against the project's done-signal for step 12 (`_planning
 1. **`consensus_settings.rescorer_col == "rescorer_rf_proba_oof"`** and **`boltz_lower_is_better == True`** -- confirms the leak guard cleared and the sign discipline applied. If either is wrong the consensus numbers below are not trustworthy.
 2. **`consensus_filter.n_shortlist`** -- the headline size of the wet-lab handoff. Tells you in one number how big the chemist's order list is.
 3. **`active_recall_sanity.enrichment_vs_random`** -- the consensus enrichment factor on labelled compounds. Above ~3x means the two-lane intersection is concentrating known actives at meaningfully better than chance; near 1x means consensus is not adding signal on this target. The done-signal in the project proposal is "respectable fraction of labelled actives" without a fixed threshold, so the right framing is honest reporting of whatever number this cell prints.
+
+Section 8 above is a *single-point* dump at the operating threshold. Section 9 below adds the *multi-threshold sweep* and the *cross-lane Spearman* -- the diagnostic curve a chemist scans when the single operating point lands strict.
+"""),
+
+        markdown("""
+## 9 - Step-12 closure diagnostics: threshold sweep + Spearman
+
+### Background
+
+The single-point run at `top_fraction = 0.05` is one operating point. The project proposal (`_planning/PROJECT_PROPOSAL.md` § 1) deliberately built the threshold as **tunable** -- the right value depends on each target's chemotype diversity, the wet-lab budget, and the agreement between the two methods. If the top-5% × top-5% intersection turns out empty (or close to empty), reporting only that number undersells what is happening: each lane is doing its job on its own; the *intersection* at that strict a threshold is just narrower than the structure of the rankings supports.
+
+This section answers two diagnostic questions in one place:
+
+1. **How does shortlist size and active recovery scale with `top_fraction`?** We re-run `compute_consensus` at four thresholds (5%, 10%, 20%, 30%) and report shortlist size, actives recovered, and enrichment-vs-random at each. The chemist reads the curve and picks the operating point that matches their order budget.
+
+2. **What is the rank-correlation between the two lanes?** Spearman ρ between `rescorer_rf_proba_oof` and `-boltz_affinity` (the negation is the same consumption-time sign discipline used in notebook 05's eval cell, commit `df9c8cf`). The value tells us *why* the consensus at a given threshold has the size it does:
+
+   - ρ ≈ 0.3-0.5: the textbook "consensus adds value" regime; lanes agree on real signal but disagree enough that the intersection meaningfully filters.
+   - ρ < 0.1 (essentially zero): the lanes pick disjoint compounds; intersection at any tight threshold is narrow by construction, and the consensus filter is doing "false-positive defence", not "joint enrichment".
+   - ρ > 0.5: the lanes are largely redundant; consensus narrows the shortlist only modestly.
+
+Together these turn the single-point step-12 result into a curve plus a root-cause read. The numbers in the consolidated block at the bottom of this cell are what land in the step-12 closing commit message and the `notebooks/README.md` status row.
+"""),
+
+        code(title="Sweep top_fraction + Spearman correlation + copy-pasteable summary block", source="""
+from scipy.stats import spearmanr
+
+SWEEP_THRESHOLDS = [0.05, 0.10, 0.20, 0.30]
+
+has_labels       = "Active" in joined.columns and joined["Active"].notna().any()
+labelled_cohort  = joined[joined["Active"].notna()] if has_labels else None
+n_actives_total  = int(labelled_cohort["Active"].astype(int).sum()) if has_labels else None
+n_labelled       = int(len(labelled_cohort)) if has_labels else None
+
+sweep_rows = []
+for tf in SWEEP_THRESHOLDS:
+    r = compute_consensus(
+        scored, affinity,
+        top_fraction=tf,
+        rescorer_col=RESCORER_COL,
+        boltz_col=BOLTZ_COL,
+        rescorer_lower_is_better=False,
+        boltz_lower_is_better=True,
+    )
+    s = r["shortlist"]
+    n_short = len(s)
+    if has_labels:
+        n_actives_in_short = int(s["Active"].fillna(0).astype(int).sum()) if n_short else 0
+        pick_frac          = n_short / n_labelled if n_labelled else 0.0
+        exp_random         = n_actives_total * pick_frac
+        recall             = (n_actives_in_short / n_actives_total) if n_actives_total else None
+        if exp_random > 0:
+            enrichment = n_actives_in_short / exp_random
+        else:
+            enrichment = 0.0 if n_actives_in_short == 0 else None
+    else:
+        n_actives_in_short = None
+        recall             = None
+        enrichment         = None
+    sweep_rows.append({
+        "top_fraction":            tf,
+        "cut":                     r["summary"]["cut_rescorer"],
+        "n_shortlist":             n_short,
+        "n_actives_in_shortlist":  n_actives_in_short,
+        "active_recall":           recall,
+        "enrichment_vs_random":    enrichment,
+    })
+
+sweep_df = pd.DataFrame(sweep_rows)
+print("Sweep table:")
+print(sweep_df.to_string(index=False))
+print()
+
+# Spearman between the two ranking columns, both oriented "higher = stronger".
+# Sign discipline: boltz_affinity is log10(IC50) µM (LOWER is stronger), so
+# we negate before passing to spearmanr -- same pattern as notebook 05's
+# eval cell (commit df9c8cf). See feedback_boltz_affinity_sign.md.
+rho, pval = spearmanr(joined[RESCORER_COL], -joined[BOLTZ_COL])
+
+if rho > 0.5:
+    interp = ("the two lanes agree strongly -- consensus narrows the shortlist "
+              "only modestly; intersection size scales close to top_fraction^2 x cohort.")
+elif rho > 0.2:
+    interp = ("the two lanes agree on real signal but disagree enough that "
+              "consensus filters meaningfully (the textbook 'consensus adds "
+              "value' regime).")
+elif rho > 0.0:
+    interp = ("weak positive agreement -- the lanes pick mostly disjoint top "
+              "compounds; intersection at tight thresholds is narrow by "
+              "construction, and consensus functions as false-positive defence "
+              "rather than joint enrichment.")
+elif rho > -0.1:
+    interp = ("essentially uncorrelated -- the two lanes pick disjoint "
+              "chemotypes on this cohort; intersection at any tight threshold "
+              "will be near-random size. Loosening top_fraction is the right "
+              "operating-point response.")
+else:
+    interp = ("negative correlation -- the lanes systematically disagree on "
+              "this cohort; investigate the underlying scores before trusting "
+              "either ranking.")
+
+# Consolidated copy-pasteable block for the step-closing commit message.
+print("=" * 50)
+print("STEP 12 EMPIRICAL FINDINGS")
+print("=" * 50)
+if has_labels:
+    cohort_pct = f"{n_actives_total / len(joined):.1%}"
+    print(f"Cohort: {len(joined)} compounds (intersection), "
+          f"{n_actives_total} actives ({cohort_pct})")
+else:
+    print(f"Cohort: {len(joined)} compounds (intersection), no Active labels")
+print("Sweep:")
+for row in sweep_rows:
+    tf  = row["top_fraction"]
+    cut = row["cut"]
+    n_s = row["n_shortlist"]
+    a_s = row["n_actives_in_shortlist"]
+    rec = row["active_recall"]
+    enr = row["enrichment_vs_random"]
+    rec_str     = f"{rec:.1%}"  if rec is not None else "n/a"
+    enr_str     = f"{enr:.2f}x" if enr is not None else "n/a"
+    actives_str = f"{a_s}/{n_s}" if has_labels else "n/a"
+    print(f"  TOP_FRACTION={tf:.2f}  cut={cut:>3d}  N_shortlist={n_s:>3d}  "
+          f"actives={actives_str:>7s}  recall={rec_str:>6s}  enrichment={enr_str}")
+print(f"Spearman rho ({RESCORER_COL}, -{BOLTZ_COL}): "
+      f"rho={rho:.3f}, p={pval:.2e}, n={len(joined)}")
+print(f"Interpretation: {interp}")
+print("=" * 50)
+"""),
+
+        markdown("""
+### How to read this block
+
+Three things to scan before declaring step 12 closed:
+
+1. **The sweep curve.** As `top_fraction` widens, both `N_shortlist` and `actives` should grow. If `N_shortlist` plateaus despite the cuts widening, the inner-join cohort is exhausted or the methods are extremely uncorrelated -- both diagnostic signals worth noting in the closing commit.
+
+2. **Where recall first crosses a "respectable" fraction.** The project proposal asks for "a respectable fraction" of labelled actives without fixing a numeric threshold. A common practical bar in medicinal-chemistry triage is **20-30 % recall at a shortlist size a chemist can actually order** (≤ 30 compounds). Find the `top_fraction` row that satisfies both and treat that as the reporting operating point.
+
+3. **The Spearman ρ + interpretation line.** Tells you *why* the curve has the shape it has. If ρ is high, all thresholds give substantial intersections; if ρ is low, even loose thresholds give narrow ones and the value of the filter is false-positive defence rather than joint enrichment.
+
+The "STEP 12 EMPIRICAL FINDINGS" block (between the `====` lines) is designed to be **copy-pasted verbatim** into the step-12 closing commit message body and into the `notebooks/README.md` status row.
 """),
 
         markdown("""
