@@ -533,7 +533,7 @@ table.head()
 
 We train two classifiers on the same training fold and compare them honestly on the same held-out fold:
 
-- **Random Forest** — the interpretable baseline. Gives feature importances (Section 9 below). `class_weight='balanced'` compensates for imbalance; we additionally apply SMOTE on the training fold for a fairer comparison with XGBoost.
+- **Random Forest** — the interpretable baseline. Gives feature importances (Section 10 below). `class_weight='balanced'` compensates for imbalance; we additionally apply SMOTE on the training fold for a fairer comparison with XGBoost.
 - **XGBoost** — usually the strongest classifier on tabular IFP data, at the cost of interpretability. Configured to use a histogram tree method and a binary-classification log-loss.
 
 We also compute the **raw gnina baseline**: use `cnn_affinity` of the top pose directly as the ranking score, no learning involved. This is what the rescorer has to beat. The brief's "done signal" is **rescorer AUC − baseline AUC > 0.02 on the held-out fold**.
@@ -641,11 +641,88 @@ results
 """),
 
         markdown("""
-## 8. Stage F — ROC curves on both splits
+## 8. Stage F — Out-of-fold predictions for downstream consumption
 
 ### Background
 
-The whole point of a rescorer is to **beat the raw docker** at ranking compounds. The baseline takes gnina's own `cnn_affinity` for the top pose and treats it as a ranking score directly — no learning. We've already computed it on each split in the cell above (under `gnina CNN_affinity` rows). Now we overlay the ROC curves so the comparison is visual on both splits side-by-side.
+Stage E gave us an honest *aggregate* metric on a single 80/20 held-out fold. That's the right format for the section's "did the rescorer beat the baseline?" question. But the downstream consensus notebook (`06_consensus_and_shortlist`) needs something different: an honest **per-compound** prediction — i.e., for every compound in the labelled subset, the rescorer's predicted probability *as if that compound had not been in training*. A single 80/20 split only gives honest predictions for 20 % of compounds; the other 80 % were in the training set, so any prediction the model makes on them is a memorisation artefact.
+
+The solution is **out-of-fold (OOF) cross-validation**:
+
+1. Split the data into N folds (scaffold-grouped, same group key as Stage E).
+2. For each fold, train a fresh model on the other N−1 folds and predict on the held-out fold.
+3. Stitch the predictions back together — every compound now has a prediction from a model that did *not* see it during training.
+
+We use 5 folds, grouped by Murcko scaffold (same `scaffolds` Series as Stage E). The methodology is identical to Stage E's `_train_and_eval` — only the bookkeeping differs (5 folds covering every compound vs. one 80/20 split).
+
+### Why both OOF and trained-on-all are written to disk
+
+The notebook saves *both* prediction types to `scored_poses.parquet`:
+
+- **`rescorer_rf_proba_oof`** / **`rescorer_xgb_proba_oof`** — honest, suitable for ranking and held-out evaluation. **This is what notebook 06's consensus shortlist consumes.**
+- **`rescorer_rf_proba`** / **`rescorer_xgb_proba`** — predictions of the model trained on *all* labelled compounds. Useful for chemistry inspection (e.g. "show me how the global model would score these never-labelled compounds when we deploy the pipeline on a new library"), but **not** for computing AUC against the labelled training set — that gives the meaningless 1.000 ceiling.
+
+This split was added after a downstream notebook caught the leak; see `_planning/KNOWN_ISSUES.md` for the original bug spec.
+"""),
+
+        code(title="5-fold scaffold-grouped OOF predictions (RF + XGBoost)", source="""
+from sklearn.model_selection import GroupKFold
+
+N_OOF_FOLDS = 5
+gkf = GroupKFold(n_splits=N_OOF_FOLDS)
+
+oof_proba_rf  = np.full(len(X), np.nan)
+oof_proba_xgb = np.full(len(X), np.nan)
+
+for fold_i, (tr_idx, te_idx) in enumerate(gkf.split(X, y, groups=scaffolds), start=1):
+    rf = make_rescorer("rf", smote=True, seed=42, n_estimators=300)
+    rf.fit(X.iloc[tr_idx], y[tr_idx])
+    oof_proba_rf[te_idx] = rf.predict_proba(X.iloc[te_idx])[:, 1]
+
+    xgb = make_rescorer("xgb", smote=True, seed=42, n_estimators=300)
+    xgb.fit(X.iloc[tr_idx], y[tr_idx])
+    oof_proba_xgb[te_idx] = xgb.predict_proba(X.iloc[te_idx])[:, 1]
+
+    rf_fold_auc  = evaluate_scores(y[te_idx], oof_proba_rf[te_idx])["auc"]
+    xgb_fold_auc = evaluate_scores(y[te_idx], oof_proba_xgb[te_idx])["auc"]
+    print(f"Fold {fold_i}: n_test={len(te_idx):3d}, "
+          f"actives={int(y[te_idx].sum()):2d}, "
+          f"RF AUC={rf_fold_auc:.3f}, XGB AUC={xgb_fold_auc:.3f}")
+
+oof_rf_eval  = evaluate_scores(y, oof_proba_rf)
+oof_xgb_eval = evaluate_scores(y, oof_proba_xgb)
+print()
+print(f"OOF (5-fold scaffold-grouped) — RF:  "
+      f"AUC={oof_rf_eval['auc']:.3f}, EF1%={oof_rf_eval['ef1']:.2f}, EF5%={oof_rf_eval['ef5']:.2f}")
+print(f"OOF (5-fold scaffold-grouped) — XGB: "
+      f"AUC={oof_xgb_eval['auc']:.3f}, EF1%={oof_xgb_eval['ef1']:.2f}, EF5%={oof_xgb_eval['ef5']:.2f}")
+"""),
+
+        markdown("""
+### How to read the OOF result
+
+Every compound now has one prediction from a model that did not see it during training. The aggregate AUC across all 413 compounds is the rescorer's honest **per-compound generalisation estimate** — methodologically more rigorous than any single 80/20 split, because it averages over five disjoint scaffold partitions covering every compound, not one optimistic realisation.
+
+The two numbers tell different stories:
+
+- **Stage E (single 80/20 scaffold split)** — one realisation of the rescorer's performance on one held-out fold. On ERK2 this landed at scaffold AUC ≈ 0.66, but that single number sits inside a wide distribution.
+- **This cell (5-fold scaffold OOF over all 413)** — the aggregate across five folds covering every compound. On ERK2 this comes in lower (RF ≈ 0.58, XGB ≈ 0.58), with substantial **per-fold variance** (the per-fold AUCs span roughly 0.40 to 0.69 — one fold lands below random, another sits near 0.70). Expect the aggregate to be **0.05–0.10 below** any optimistic single-split realisation as a rule of thumb.
+
+The OOF aggregate is the number to anchor on when reporting the rescorer's expected performance on a new chemotype; it is what `notebook 06` consumes for the consensus shortlist. The per-fold spread is the **scientifically informative second number** — it tells you the rescorer generalises *unevenly* across chemotypes (which is precisely what scaffold splits exist to expose). Report both; don't average the spread away.
+
+If the OOF AUC comes in materially lower (< 0.55) or higher (> 0.75), that's a finding to investigate before relying on it downstream. Pathological causes to consider:
+
+- One fold dominates the actives — `n_actives` per fold in the print above should be roughly balanced (within ±10 % of the global active count).
+- A scaffold collision between fold training sets (shouldn't happen with `GroupKFold`, but worth eyeballing).
+- A subtle drift between this cell's feature pipeline and Stage E's — both use `X` and `y` exactly as built in Stage D, so this should not occur.
+"""),
+
+        markdown("""
+## 9. Stage G — ROC curves on both splits
+
+### Background
+
+The whole point of a rescorer is to **beat the raw docker** at ranking compounds. The baseline takes gnina's own `cnn_affinity` for the top pose and treats it as a ranking score directly — no learning. We've already computed it on each split in Stage E (under `gnina CNN_affinity` rows). Now we overlay the ROC curves so the comparison is visual on both splits side-by-side.
 """),
 
         code(title="ROC curves — random vs scaffold split, baseline vs RF vs XGBoost", source="""
@@ -692,7 +769,7 @@ If neither rescorer beats the baseline on the scaffold split:
 """),
 
         markdown("""
-## 9. Stage G — what did the Random Forest learn?
+## 10. Stage H — what did the Random Forest learn?
 
 ### Background
 
@@ -721,14 +798,25 @@ plt.show()
 """),
 
         markdown("""
-## 10. Stage H — save the trained rescorer and the scored-poses table
+## 11. Stage I — save the trained rescorer and the scored-poses table
 
 ### Background
 
 The contract with downstream notebook `06_consensus_and_shortlist`:
 
 - **`rescorer.pkl`** — the trained RF model. We save the Random Forest trained on **all** data (no held-out fold) so the model that ships downstream is the strongest one we can produce; the AUCs from the held-out folds above are the *performance estimate* for this final model, not the model itself. If a future run shows XGBoost consistently winning on the scaffold split, swap the saved model in one line.
-- **`scored_poses.parquet`** — one row per compound: features, the rescorer's predicted activity probability, the raw gnina CNN affinity, and the label (when known). For each compound we record which test fold(s) it sits in (`in_random_test_fold`, `in_scaffold_test_fold`) so notebook `06` can choose to rank on held-out-only scores if it wants to.
+- **`scored_poses.parquet`** — one row per compound, with **four prediction columns** + features + label + fold-membership flags:
+
+| Column | Source | Use it for | Never use it for |
+|---|---|---|---|
+| `rescorer_rf_proba_oof`  | 5-fold scaffold OOF (Stage F) | **Ranking, consensus shortlist, held-out evaluation** | — |
+| `rescorer_xgb_proba_oof` | 5-fold scaffold OOF (Stage F) | Comparator to the RF OOF; honest like above | — |
+| `rescorer_rf_proba`      | RF trained on **all** 413 compounds | Chemistry inspection (e.g. score brand-new compounds at deployment time) | Held-out AUC against the labelled subset — gives a meaningless 1.000 |
+| `rescorer_xgb_proba`     | XGBoost trained on **all** 413 compounds | Same as above | Same as above |
+
+The honest OOF columns are the **default consumed by `aidd.consensus.compute_consensus`** (its `rescorer_col` parameter defaults to `rescorer_rf_proba_oof`). The leaked trained-on-all columns are preserved deliberately for two reasons: (1) the chemistry-inspection use case is real — at deployment time on a fresh library, the strongest available model is the one trained on all known data — and (2) they're cheap to keep and removing them would silently break any historical notebook that referenced them.
+
+The fold-membership flags (`in_random_test_fold`, `in_scaffold_test_fold`) record which Stage-E split each compound landed in. These remain useful for ad-hoc evaluations against a specific 80/20 split, but they're orthogonal to the OOF columns above — the OOF predictions cover every compound, not just the test slice.
 
 The notebook is reproducible: re-running it produces bit-identical artefacts (same seeds, same data, same caches).
 """),
@@ -747,12 +835,16 @@ final_xgb.fit(X, y)
 all_proba_xgb = final_xgb.predict_proba(X)[:, 1]
 
 scored = table[["compound_id", "Active"]].copy()
-scored["rescorer_rf_proba"]   = all_proba_rf
-scored["rescorer_xgb_proba"]  = all_proba_xgb
-scored["gnina_cnn_affinity"]  = X["cnn_affinity"].to_numpy()
-scored["gnina_affinity"]      = X["affinity"].to_numpy()
-scored["in_random_test_fold"]   = scored.index.isin(run_random["test_idx"])
-scored["in_scaffold_test_fold"] = scored.index.isin(run_scaffold["test_idx"])
+# Honest, OOF — what downstream consumers (notebook 06) rank on.
+scored["rescorer_rf_proba_oof"]  = oof_proba_rf
+scored["rescorer_xgb_proba_oof"] = oof_proba_xgb
+# Leaked, trained-on-all — chemistry inspection only; see the table above.
+scored["rescorer_rf_proba"]      = all_proba_rf
+scored["rescorer_xgb_proba"]     = all_proba_xgb
+scored["gnina_cnn_affinity"]     = X["cnn_affinity"].to_numpy()
+scored["gnina_affinity"]         = X["affinity"].to_numpy()
+scored["in_random_test_fold"]    = scored.index.isin(run_random["test_idx"])
+scored["in_scaffold_test_fold"]  = scored.index.isin(run_scaffold["test_idx"])
 
 scored.to_parquet(SCORED_POSES, index=False)
 print(f"Wrote scored table → {pretty_path(SCORED_POSES, DATA_ROOT, REPO_ROOT)}  ({len(scored):,} rows)")
@@ -766,6 +858,8 @@ joblib.dump(
         "trained_on": "erk2_labeled_subset_v1",
         "scaffold_split_auc": run_scaffold["rf_eval"]["auc"],
         "random_split_auc":   run_random["rf_eval"]["auc"],
+        "oof_scaffold_auc":   oof_rf_eval["auc"],
+        "oof_scaffold_ef1":   oof_rf_eval["ef1"],
     },
     RESCORER_PKL,
 )
