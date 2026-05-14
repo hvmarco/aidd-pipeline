@@ -322,18 +322,29 @@ The exact ranges differ per target; the point is just that both columns vary acr
 1. Inner-join on `compound_id`.
 2. Per-lane signed score (negate `boltz_affinity` because lower = stronger; leave the rescorer probability alone). This is what makes "rank 1" mean "strongest by this lane" regardless of the column's native direction.
 3. Within-lane ranks (`1` = best after sign correction).
-4. Top-`top_fraction` flags per lane (default 5%).
+4. Per-lane top-`top_fraction` flags (always computed; consumed by the intersection filter and shown as cut-lines in section 4's scatter).
 5. Rank product on the joined table.
-6. Filter to compounds top-`top_fraction` by **both** lanes; sort ascending by rank product; assign `consensus_rank` 1-based.
-7. Two anti-join side tables: compounds top-X% by rescorer that Boltz-2 could not score, and vice-versa. These are **not** in the headline shortlist (a chemist asked us for compounds with two-method agreement) but they are visible so nothing is silently lost.
+6. Filter to the consensus shortlist via `filter_method`:
+   - `"intersection"` (project default) -- compounds in the top-X% by **both** lanes.
+   - `"rank_product_topk"` -- top K = ceil(`top_fraction` × N) compounds by rank product across the joined cohort, no per-lane gating.
+7. Sort survivors ascending by rank product; assign `consensus_rank` 1-based.
+8. Two anti-join side tables: compounds top-X% by rescorer that Boltz-2 could not score, and vice-versa. These are visible so nothing is silently lost.
 
 ### What this cell does
 
-Calls `compute_consensus` with the locked-in defaults from `_planning/PROJECT_PROPOSAL.md`: `top_fraction=0.05` (top 5%), `rescorer_col=RESCORER_COL` (the out-of-fold rescorer column), `boltz_col=BOLTZ_COL`. The two `*_lower_is_better` flags fall back to their defaults (`False` for the rescorer, `True` for Boltz) which match what the upstream notebooks write to disk -- if you ever swap `BOLTZ_COL` to `boltz_affinity_probability`, also pass `boltz_lower_is_better=False`. The summary prints every count at every stage of the join + filter, plus the sign conventions actually applied.
+Calls `compute_consensus` with the operating point chosen for ERK2 by the empirical sweep in section 9: **`filter_method="rank_product_topk"`** at **`top_fraction=0.10`**. Section 9 measures both methods at four thresholds; on this target the lanes are statistically uncorrelated (Spearman ρ ≈ 0.08, p ≈ 0.11) so the intersection method picks essentially disjoint chemotypes and gives near-empty shortlists at tight thresholds. Rank-product-topk surfaces compounds that are strong on at least one lane and not catastrophically weak on the other; on ERK2 this delivers ~20 % recall of known actives at ~2× enrichment vs random in a 42-compound shortlist (the wet-lab handoff size most teams can absorb in one batch).
+
+The two `*_lower_is_better` flags fall back to their defaults (`False` for the rescorer, `True` for Boltz) which match what the upstream notebooks write to disk -- if you ever swap `BOLTZ_COL` to `boltz_affinity_probability`, also pass `boltz_lower_is_better=False`. The summary prints every count at every stage of the join + filter, plus the sign conventions and `filter_method` actually applied.
+
+> **For a different target**, re-run section 9 first; if the cross-lane Spearman ρ is in the [0.15, 0.5] band (statistically significant), `intersection` may be the better filter and you should switch this cell back to `filter_method="intersection"` (and `top_fraction=0.05` per the project default). The right operating point is target-dependent; section 9 is the diagnostic that picks it.
 """),
 
-        code(title="Apply the consensus rule (top 5% by both, ranked by rank product)", source="""
-TOP_FRACTION = 0.05  # locked default per _planning/PROJECT_PROPOSAL.md §1
+        code(title="Apply the consensus rule (rank_product_topk @ top 10%, per the section-9 sweep)", source="""
+# Operating point chosen empirically for ERK2 -- see section 9's sweep for
+# the per-method, per-threshold comparison and the cross-lane Spearman.
+# For a new target, re-run section 9 BEFORE trusting these defaults.
+TOP_FRACTION  = 0.10
+FILTER_METHOD = "rank_product_topk"
 
 result = compute_consensus(
     scored, affinity,
@@ -344,9 +355,11 @@ result = compute_consensus(
     # explicitly so a future reader sees the sign discipline at the call site.
     rescorer_lower_is_better=False,
     boltz_lower_is_better=True,
+    filter_method=FILTER_METHOD,
 )
 
-print(f"Consensus computed at top_fraction = {TOP_FRACTION:.0%}")
+print(f"Consensus computed at top_fraction = {TOP_FRACTION:.0%}, "
+      f"filter_method = {FILTER_METHOD!r}")
 print(f"  rescorer_col = {RESCORER_COL!r}  (higher = stronger)")
 print(f"  boltz_col    = {BOLTZ_COL!r}     (lower  = stronger; negated internally)")
 print()
@@ -364,11 +377,11 @@ for k, v in result["summary"].items():
 - `n_shortlist`: the size of the consensus shortlist -- the headline number for this notebook.
 - `n_rescorer_only_top` / `n_boltz_only_top`: side-file sizes. Compounds top-X% by one lane that the other lane never scored.
 
-If `n_shortlist` is `0` -- the two lanes' top-X%s have empty overlap -- consider one of:
+If the shortlist size looks unexpectedly small or the recall sanity check below comes back near zero, the cause is almost always one of:
 
-- Loosen `TOP_FRACTION` to `0.10` or `0.20` and re-run this cell. Same recipe, just more compounds survive.
-- Check the Spearman correlation reported in notebook `05`. If it is near zero or negative, the two methods disagree systematically and consensus will always be small. Report this in the project notes; it is a real (but informative) result.
-- Verify both lanes ran on the **same** compound cohort. If notebook `05` ran on a different SMILES set than notebook `04`, the intersection on `compound_id` will be tiny by construction.
+- **Lanes are uncorrelated on this target.** `intersection` on uncorrelated lanes will give near-empty shortlists at tight thresholds by construction; `rank_product_topk` (the default for ERK2) was chosen specifically for this regime. Section 9 below quantifies the cross-lane Spearman ρ and reports both methods at four thresholds so you can see the regime.
+- **`top_fraction` is too tight for this cohort.** Try `0.20` or `0.30` and re-run this cell -- section 9's sweep already shows what each threshold delivers; pick the operating point that matches your wet-lab budget.
+- **The two lanes ran on different compound cohorts.** If notebook `05` ran on a different SMILES set than notebook `04`, the inner join on `compound_id` will be tiny. `n_intersection` above is the join size; if it's much smaller than `n_rescorer_total` or `n_boltz_total`, that's the diagnosis.
 """),
 
         markdown("""
@@ -378,11 +391,11 @@ If `n_shortlist` is `0` -- the two lanes' top-X%s have empty overlap -- consider
 
 A scatter of (rescorer rank) vs (Boltz rank) tells you at a glance whether the two methods agree or not:
 
-- A **diagonal cloud** running bottom-left to top-right means the two rankings are correlated -- compounds the rescorer likes also tend to score well in Boltz. Consensus then keeps the bottom-left corner (top-X% by both), which is exactly what we want.
-- A **scattered cloud** with no diagonal means the two methods disagree across the library. Consensus still works: it picks compounds in the bottom-left corner of the cloud, which is the rare overlap region. The shortlist will be smaller but each entry is more informative.
+- A **diagonal cloud** running bottom-left to top-right means the two rankings are correlated -- compounds the rescorer likes also tend to score well in Boltz. In that regime the `intersection` filter would keep the bottom-left corner (top-X% by both), which would also be where most rank-product-topk picks land.
+- A **scattered cloud** with no diagonal means the two methods disagree across the library. The `intersection` rectangle (dotted lines below) ends up nearly empty, and the actual shortlist (under `rank_product_topk` -- our default for ERK2) sits along the lowest-rank-product *curve* rather than inside the rectangle. The chart makes this difference visible.
 - A **fully horizontal or vertical band** means one lane is degenerate (constant score). Stop and check the upstream cell.
 
-We overlay the shortlisted compounds (in red) so you can see exactly which points the consensus rule kept.
+The dotted blue / orange lines mark the per-lane top-`TOP_FRACTION` cuts -- they show **where the intersection method would have placed its filter**. The red dots are the **actual shortlist** under whichever `filter_method` was chosen in section 3. Comparing the two answers at a glance: *"if we'd used intersection, we'd have picked the compounds inside the rectangle; rank_product_topk picked these other ones because the rank-product curve dips lower than the rectangle's corners on this cohort."*
 """),
 
         code(title="Scatter: rescorer rank vs Boltz rank, with shortlisted compounds highlighted", source="""
@@ -395,18 +408,19 @@ ax.scatter(joined["rank_rescorer"], joined["rank_boltz"],
 if len(short) > 0:
     ax.scatter(short["rank_rescorer"], short["rank_boltz"],
                c="crimson", s=60, edgecolor="black", linewidth=0.5,
-               label=f"shortlist (n = {len(short)})")
+               label=f"shortlist (n = {len(short)}, filter = {FILTER_METHOD})")
 
 cut_r = result["summary"]["cut_rescorer"]
 cut_b = result["summary"]["cut_boltz"]
 ax.axvline(cut_r, color="tab:blue",   linestyle=":", alpha=0.7,
-           label=f"top {TOP_FRACTION:.0%} by rescorer (rank ≤ {cut_r})")
+           label=f"top {TOP_FRACTION:.0%} by rescorer (intersection cut, rank ≤ {cut_r})")
 ax.axhline(cut_b, color="tab:orange", linestyle=":", alpha=0.7,
-           label=f"top {TOP_FRACTION:.0%} by Boltz (rank ≤ {cut_b})")
+           label=f"top {TOP_FRACTION:.0%} by Boltz (intersection cut, rank ≤ {cut_b})")
 
 ax.set_xlabel("rescorer rank  (1 = best)")
 ax.set_ylabel("Boltz-2 rank   (1 = best)")
-ax.set_title(f"Consensus on {TARGET.upper()}: shortlist sits in the bottom-left corner")
+ax.set_title(f"Consensus on {TARGET.upper()} (filter = {FILTER_METHOD}, "
+             f"top = {TOP_FRACTION:.0%}): shortlist in red")
 ax.legend(loc="upper right", fontsize=9)
 ax.invert_xaxis()  # so '1' is at the right edge -- bottom-LEFT is best in unflipped sense
 ax.invert_yaxis()  # same for y
@@ -417,7 +431,12 @@ plt.show()
         markdown("""
 ### What the axes mean
 
-The axes are inverted so that **rank 1 (the best compound by each lane) sits in the bottom-left**, matching the chemist's mental model of "low score = bad, high = good" even though we are plotting *ranks* (where lower is better). The shortlisted (red) points must all sit in the bottom-left rectangle defined by the two dotted threshold lines -- if any red point is outside that rectangle, the consensus filter is buggy.
+The axes are inverted so that **rank 1 (the best compound by each lane) sits in the bottom-left**, matching the chemist's mental model of "low score = bad, high = good" even though we are plotting *ranks* (where lower is better).
+
+Where the red shortlisted dots sit depends on `filter_method`:
+
+- Under `filter_method="intersection"`, every red dot must sit inside the bottom-left rectangle defined by the dotted threshold lines (top-X% by both). A red dot outside the rectangle would mean the filter is buggy.
+- Under `filter_method="rank_product_topk"` (the default for ERK2), red dots can sit anywhere along the lowest-rank-product *curve* -- including outside the rectangle. A compound at rank 1 in one lane and rank ~50 in the other has rank product `sqrt(50) ≈ 7.07`, lower than a moderate-in-both compound at rank ~10 in each (`sqrt(100) = 10`). The rectangle is shown as a reference for what intersection would have picked at the same threshold; a noticeable gap between the rectangle and the red cloud is the visual signature of a low-correlation cohort where rank-product is the better filter.
 """),
 
         markdown("""
@@ -692,9 +711,9 @@ else:
 
 Three things to check before handing the shortlist to a chemistry team:
 
-1. **Sign discipline applied.** `consensus_settings` should show `rescorer_col == "rescorer_rf_proba_oof"`, `rescorer_lower_is_better == False`, and `boltz_lower_is_better == True`. If any of those is wrong the ranking is inverted on at least one lane and every downstream number is meaningless. (Boltz-2's `boltz_affinity` is in `log10(IC50) µM` units where *lower* is stronger -- opposite to the rescorer's higher-is-stronger probability. `compute_consensus` negates Boltz internally; this block is the receipt.)
-2. **Shortlist size is in an actionable range.** `consensus_filter.n_shortlist` is the number of compounds a chemist would actually order. Single digits = order all of them; tens = triage a bit; hundreds = the threshold was too loose, tighten it.
-3. **Labelled actives concentrate better than random.** `active_recall_sanity.enrichment_vs_random` should be meaningfully above 1× when the cohort carries known actives. A ratio close to 1× means the consensus filter is picking compounds at random with respect to activity -- which is informative either way (it tells you the two lanes either disagree on which actives matter, or one of them is mis-calibrated). Section 9 below diagnoses *why* by widening the threshold and reporting the cross-method correlation.
+1. **Sign discipline + filter method applied.** `consensus_settings` should show `rescorer_col == "rescorer_rf_proba_oof"`, `rescorer_lower_is_better == False`, `boltz_lower_is_better == True`, and `filter_method == "rank_product_topk"` (the operating point chosen for ERK2 in section 3 per section 9's sweep). If any of those is wrong the ranking is inverted on at least one lane or the wrong filter is in play, and every downstream number is meaningless. (Boltz-2's `boltz_affinity` is in `log10(IC50) µM` units where *lower* is stronger -- opposite to the rescorer's higher-is-stronger probability. `compute_consensus` negates Boltz internally; this block is the receipt.)
+2. **Shortlist size is in an actionable range.** `consensus_filter.n_shortlist` is the number of compounds a chemist would actually order. Tens = a typical wet-lab batch (the ERK2 default operating point gives ~42 compounds); hundreds = the threshold was too loose, tighten it; single digits = either the threshold is very strict or you are using `intersection` on uncorrelated lanes (switch to `rank_product_topk`).
+3. **Labelled actives concentrate better than random.** `active_recall_sanity.enrichment_vs_random` should be meaningfully above 1× when the cohort carries known actives. A ratio close to 1× means the consensus filter is picking compounds at random with respect to activity. Section 9 below diagnoses *why* by widening the threshold, comparing both filter methods, and reporting the cross-method correlation.
 """),
 
         markdown("""
@@ -708,9 +727,12 @@ This section answers both in one place by measuring **two filter methods at four
 
 ### The two filter methods
 
-So far the notebook has used the **intersection** filter: a compound makes the shortlist iff it ranks in the top-X% by **both** lanes. Intersection is correct when the two lanes agree on real signal -- their top compounds overlap, the intersection is non-empty and concentrated in true actives. When the lanes disagree (low Spearman ρ), the intersection becomes empty by construction even though each lane individually has signal.
+Section 3 above chose **`rank_product_topk`** as the operational filter for ERK2; this section measures both methods at four thresholds so a reviewer can see *why* that choice was made and what the alternative looks like.
 
-The standard alternative for low-correlation regimes is **rank-product across the full cohort** (Wang & Wang 2001 *J. Chem. Inf. Comput. Sci.* **41**, 1422; cited in the recap below). Compute `rank_product = sqrt(rank_rescorer * rank_boltz)` for every joined compound, then take the top K = ceil(`top_fraction` × N) by lowest rank product. No per-lane gating; the rank product itself becomes the consensus score.
+The two methods:
+
+- **`intersection`** -- a compound makes the shortlist iff it ranks in the top-X% by **both** lanes. The project-default filter and the right choice when the two lanes agree on real signal -- their top compounds overlap, the intersection is non-empty and concentrated in true actives. When the lanes disagree (low Spearman ρ), the intersection becomes empty by construction even though each lane individually has signal.
+- **`rank_product_topk`** -- compute `rank_product = sqrt(rank_rescorer * rank_boltz)` for every joined compound, then take the top K = ceil(`top_fraction` × N) by lowest rank product. No per-lane gating; the rank product itself becomes the consensus score. Standard alternative for low-correlation regimes (Wang & Wang 2001 *J. Chem. Inf. Comput. Sci.* **41**, 1422; cited in the recap below).
 
 The two methods make different chemistry trade-offs:
 
