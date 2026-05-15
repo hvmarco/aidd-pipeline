@@ -9,6 +9,7 @@ Module layout (planned):
 - viz: py3Dmol helpers
 - io: path conventions and per-stage cache management
 - variants: AlphaMissense + gnomAD per-variant priors (notebook 07)
+- stability: RaSP ΔΔG variant-stability lookup (notebook 07)
 """
 
 __version__ = "0.0.0"
