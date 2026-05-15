@@ -22,6 +22,9 @@ dependencies:
   - openbabel
   - biopython
 
+  # --- public-database lookups (variant priors notebook 07) ---
+  - requests           # AlphaMissense download stream + gnomAD GraphQL POST
+
   # --- CPU docking baseline ---
   # AutoDock Vina has no conda-forge package for Windows. Install when needed via:
   #   - Colab: apt-get install autodock-vina (or use gnina)
