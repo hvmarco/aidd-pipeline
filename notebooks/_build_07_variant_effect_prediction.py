@@ -353,9 +353,14 @@ The trade-off: we cannot run RaSP on a user-supplied custom PDB (e.g. a mutant f
 
 ### Coverage of the demo-set genes
 
-`NAT2`, `DPYD`, `CYP2D6`, `KRAS`, `BRCA1`, `ESR1` — each has at least one human crystal structure, so each is covered.
+Step 14's calibration walkthrough (§5 below) revealed that the 414 MB experimental-structures CSV is much narrower than its file name (`exp_strucs_gnomad_clinvar.csv`) suggested:
 
-`UGT1A1` is **not covered** (no human crystal structure exists). This is acknowledged in `_planning/MECHANISM_OF_ACTION_SCOPE.md`; the future notebook 09 UGT1A1\\*28 demo will branch to AlphaFold-based RaSP predictions when needed (one helper-internal data-source swap; the helper signature does not change).
+- **NAT2 (P11245)** — covered. Both calibration variants (I114T, K268R) resolve.
+- **DPYD, CYP2D6, KRAS, BRCA1, ESR1, UGT1A1** — NOT covered. The cache has zero rows for any of these proteins. Five of them have at least one human crystal structure (UGT1A1 is the only one with no crystal at all); the upstream's selection criteria for what to include in this CSV are unclear from the file metadata, possibly tied to the original paper's analysis scope rather than "all human proteins with crystals". The §4 code cell below prints the per-protein coverage triage explicitly.
+
+This is wider than initially documented in `aidd.stability`'s module docstring (which mentioned only UGT1A1's no-crystal case). The architecture is correct — the helper honestly returns `None` for any uncovered protein and `rasp_covers(uniprot_id)` exposes the gap programmatically — but the data-source choice was a poorer fit than the upstream filename suggested.
+
+**Step 17 (notebook 99 build) switches the data source to the 9 GB AlphaFold-based dataset** (`rasp_preds_alphafold_UP000005640_9606_HUMAN_v2.zip`) which covers the full human proteome and resolves all six of these gaps in one swap. The helper's public API does not change between data sources — only `_build_rasp_demo_cache` in `src/aidd/stability.py` does. The empirical measurement here materially strengthens the case for that swap as a step-17 architectural commitment.
 """),
 
         markdown("""
@@ -528,13 +533,15 @@ NAT2 K268R resolves only after the helper applies bidirectional HGVSp matching. 
 
 The biallelic approximation caveat documented in the helper applies: at multiallelic sites with three-or-more alleles, the inverted AF slightly overestimates the queried allele's frequency (other alts aren't subtracted). For NAT2 codon 268 the other alts are very rare so the approximation is tight; the docstring documents this honestly. Future pharmacogene work in nb 08 and nb 09 should always pass `wt_aa` to `gnomad_frequency` to enable the bidirectional match — common pharmacogene polymorphism positions are exactly where the convention is most likely to flip.
 
-#### Finding 3 — RaSP coverage gap on the experimental-structures dataset
+#### Finding 3 — RaSP coverage gap on the experimental-structures dataset is wider than originally documented
 
-DPYD I560S and KRAS G12C both return RaSP = NaN. The cause is upstream coverage, not numbering drift: the 414 MB experimental-structures CSV used by step 14 simply does not include DPYD (Q12882) or KRAS (P01116), even though both proteins have crystal structures. Same architectural class as UGT1A1's gap (UGT1A1 has no human crystal at all).
+DPYD I560S and KRAS G12C both return RaSP = NaN. The §4 coverage triage block above shows why: of the seven demo-set genes, **only NAT2 is covered** by the 414 MB experimental-structures CSV. DPYD, CYP2D6, KRAS, BRCA1, ESR1, and UGT1A1 all return zero rows for any RaSP query.
 
-This is documented in advance in `aidd.stability`'s module docstring as a known limit of the chosen data source. Step 17 (notebook 99 build) switches to the 9 GB AlphaFold-based RaSP dataset (`rasp_preds_alphafold_UP000005640_9606_HUMAN_v2.zip`) which covers the full human proteome and resolves both these gaps. The helper's public API does not change between data sources; only `_build_rasp_demo_cache`'s data source does. Future readers running this notebook after step 17 will see RaSP values for DPYD I560S and KRAS G12C populated, with the rest of the reading unchanged.
+This is wider than the gap initially documented in `aidd.stability`'s module docstring (which mentioned only UGT1A1's no-crystal case). The 414 MB CSV's file name (`exp_strucs_gnomad_clinvar.csv`) was misleading: rather than saturated predictions on every human protein with a crystal structure, it appears to be a curated subset (selection criteria unclear; possibly tied to the upstream paper's analysis scope). Among our six uncovered demo genes, only UGT1A1 lacks a crystal — the other five (DPYD, CYP2D6, KRAS, BRCA1, ESR1) all have crystal structures that were nevertheless excluded from this CSV.
 
-The "KRAS G12C as the negative control showing RaSP returns small ΔΔG for non-stability-driven oncogenic variants" pedagogical point is exercisable post step-17 cache swap. For step 14, the calibration confirms the rest of the architecture: AM and gnomAD correctly identify KRAS G12C as a pathogenic-but-not-population-frequent variant (consistent with somatic-only oncogenic driver), and the helper honestly reports `None` for RaSP rather than fabricating.
+The architecture is correct — the helper honestly returns `None` for any uncovered protein, and `rasp_covers(uniprot_id)` exposes the gap programmatically (used in §4 to print the coverage triage) so downstream callers in nb 09 can branch cleanly when a target's RaSP data is unavailable. **Step 17's swap to the 9 GB AlphaFold-based dataset closes all six of these gaps at once**, materially strengthening the case for that swap as the step-17 architectural commitment recorded in `_planning/PROJECT_PROPOSAL.md` § 7. The helper signature does not change between data sources; only `_build_rasp_demo_cache`'s URL does.
+
+For step 14, the calibration confirms the rest of the architecture: AM and gnomAD correctly identify both DPYD I560S (LoF rare) and KRAS G12C (oncogenic non-stability) by their AM + gnomAD signature alone. The "RaSP returns small ΔΔG for non-stability-driven oncogenic drivers like KRAS G12C" pedagogical point is exercisable post step-17 cache swap; until then, the helper honestly reports `None` rather than fabricating a number that would mislead a clinical reader.
 
 #### Per-row reading
 
