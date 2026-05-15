@@ -236,28 +236,33 @@ def _build_alphamissense_demo_cache(parquet_path: Path) -> None:
     with requests.get(ALPHAMISSENSE_URL, stream=True, timeout=600) as resp:
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0)) or None
-        raw = _wrap_with_progress(resp.raw, total=total, desc="AlphaMissense")
-        with gzip.GzipFile(fileobj=raw) as gz, io.TextIOWrapper(gz, encoding="utf-8") as fh:
-            for line in fh:
-                if not line or line.startswith("#"):
-                    continue
-                if line.startswith("uniprot_id\t"):
-                    continue
-                parts = line.rstrip("\n").split("\t")
-                if len(parts) < 4:
-                    continue
-                uniprot, variant, score_str, am_class = parts[0], parts[1], parts[2], parts[3]
-                if uniprot not in keep_uniprots:
-                    continue
-                # protein_variant is e.g. 'V2L' (wt + position + alt).
-                wt_aa = variant[:1]
-                alt_aa = variant[-1:]
-                try:
-                    pos = int(variant[1:-1])
-                    score = float(score_str)
-                except ValueError:
-                    continue
-                rows.append((uniprot, pos, wt_aa, alt_aa, score, am_class))
+        # _wrap_with_progress returns a CONTEXT MANAGER (tqdm.wrapattr is one);
+        # it must be entered with `with` to yield the wrapped stream. Assigning
+        # its return value directly to `raw` and passing that to gzip.GzipFile
+        # was the bug fixed in commit <this one>: GzipFile then called
+        # `.read(2)` on the context manager itself, hitting AttributeError.
+        with _wrap_with_progress(resp.raw, total=total, desc="AlphaMissense") as raw:
+            with gzip.GzipFile(fileobj=raw) as gz, io.TextIOWrapper(gz, encoding="utf-8") as fh:
+                for line in fh:
+                    if not line or line.startswith("#"):
+                        continue
+                    if line.startswith("uniprot_id\t"):
+                        continue
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) < 4:
+                        continue
+                    uniprot, variant, score_str, am_class = parts[0], parts[1], parts[2], parts[3]
+                    if uniprot not in keep_uniprots:
+                        continue
+                    # protein_variant is e.g. 'V2L' (wt + position + alt).
+                    wt_aa = variant[:1]
+                    alt_aa = variant[-1:]
+                    try:
+                        pos = int(variant[1:-1])
+                        score = float(score_str)
+                    except ValueError:
+                        continue
+                    rows.append((uniprot, pos, wt_aa, alt_aa, score, am_class))
 
     df = pd.DataFrame(
         rows,
@@ -491,13 +496,24 @@ def _resolve_cache_dir(cache_dir: PathLike | None, subdir: str) -> Path:
 
 
 def _wrap_with_progress(raw, *, total: int | None, desc: str):
-    """Wrap a file-like object with a tqdm progress bar on ``read``.
+    """Return a CONTEXT MANAGER that yields a tqdm-progress-wrapped file-like.
 
-    Falls back to the unwrapped object when tqdm is unavailable so a
-    minimal install (no Jupyter / no tqdm) still works.
+    Use as::
+
+        with _wrap_with_progress(raw, total=N, desc="...") as wrapped:
+            ...  # wrapped.read() updates the progress bar
+
+    ``tqdm.wrapattr`` is itself a context manager — calling it without
+    ``with`` returns the manager object, NOT the wrapped stream, and
+    downstream callers that expect a file-like will hit AttributeError
+    (gzip.GzipFile calls .read(2) immediately on the wrong object).
+
+    Falls back to ``contextlib.nullcontext(raw)`` when tqdm is
+    unavailable, so a minimal install still works.
     """
     try:
         from tqdm.auto import tqdm
     except ImportError:
-        return raw
+        from contextlib import nullcontext
+        return nullcontext(raw)
     return tqdm.wrapattr(raw, "read", total=total, miniters=1, desc=desc, unit="B", unit_scale=True)

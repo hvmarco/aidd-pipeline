@@ -65,12 +65,12 @@ You'll get value if you are:
 This notebook is **independent of notebooks 00–06**. It only depends on:
 
 - The conda environment `aidd` (`conda env create -f environment.yml`), or running on Google Colab (the setup cell installs everything).
-- A working internet connection on first run (to download the AlphaMissense + RaSP caches; ~5.4 GB total). Subsequent runs hit the on-disk cache and need no network.
+- A working internet connection on first run (to download the AlphaMissense + RaSP caches; about 5.4 GB total). Subsequent runs hit the on-disk cache and need no network.
 
 ## Runtime
 
 - **CPU-only.** No GPU dependency anywhere. Free Colab T4, Colab CPU, Windows / macOS local — all work identically.
-- **First run on a new system: 6 – 20 minutes.** Dominated by the AlphaMissense download (~5 GB compressed → stream-decompress + filter to demo set → ~1 MB parquet) and the RaSP CSV download (~414 MB → filter → ~1 MB parquet). Network speed and Colab disk speed dominate; the actual processing is small.
+- **First run on a new system: 6 – 20 minutes.** Dominated by the AlphaMissense download (about 5 GB compressed, stream-decompress + filter to demo set, output about 1 MB parquet) and the RaSP CSV download (about 414 MB, filter to demo set, output about 1 MB parquet). Network speed and Colab disk speed dominate; the actual processing is small.
 - **Cached re-runs: under 30 seconds.** Both caches are on Drive (Colab) or in the repo's `data/cache/` (local), so a kernel restart re-uses them.
 """),
 
@@ -185,7 +185,7 @@ print(f"Demo-set genes covered by the priors: "
         markdown("""
 ### Google Drive — read this before running the next cell
 
-The two cache files this notebook builds (AlphaMissense ~1 MB after demo-set filter, RaSP ~1 MB after demo-set filter) are tiny. The *download* that builds them is not — AlphaMissense's source is ~5 GB compressed and RaSP's is ~414 MB. Putting both caches on Google Drive when on Colab means a runtime restart re-uses them instead of re-downloading.
+The two cache files this notebook builds (AlphaMissense about 1 MB after demo-set filter; RaSP about 1 MB after demo-set filter) are tiny. The *download* that builds them is not — AlphaMissense's source is about 5 GB compressed and RaSP's is about 414 MB. Putting both caches on Google Drive when on Colab means a runtime restart re-uses them instead of re-downloading.
 
 **To opt out**, set `USE_DRIVE = False` in the cell *before* running it. The notebook will then write the caches under the local repo's `data/cache/` tree — fine if you intend to re-run on the same Colab runtime, painful otherwise.
 """),
@@ -233,7 +233,7 @@ We do not run the model here. We look the answer up in the precomputed table Dee
 
 ### Demo-set scope
 
-To keep the on-disk cache small and the first-run download manageable, this notebook ships only the AlphaMissense scores for the seven demo-set genes (`NAT2`, `DPYD`, `CYP2D6`, `UGT1A1`, `KRAS`, `BRCA1`, `ESR1`). The first call to `alphamissense_score(...)` on a new system stream-downloads the upstream ~5 GB gzipped TSV and filters to the seven UniProt accessions on the fly, producing a ~1 MB parquet at `data/cache/alphamissense/demo_set.parquet`. To extend coverage to additional genes, edit `DEMO_SET_UNIPROT_IDS` in `src/aidd/variants.py` and delete the parquet to trigger a rebuild.
+To keep the on-disk cache small and the first-run download manageable, this notebook ships only the AlphaMissense scores for the seven demo-set genes (`NAT2`, `DPYD`, `CYP2D6`, `UGT1A1`, `KRAS`, `BRCA1`, `ESR1`). The first call to `alphamissense_score(...)` on a new system stream-downloads the upstream (about 5 GB gzipped TSV) and filters to the seven UniProt accessions on the fly, producing a small parquet (around 1 MB) at `data/cache/alphamissense/demo_set.parquet`. To extend coverage to additional genes, edit `DEMO_SET_UNIPROT_IDS` in `src/aidd/variants.py` and delete the parquet to trigger a rebuild.
 """),
 
         markdown("""
@@ -241,7 +241,7 @@ To keep the on-disk cache small and the first-run download manageable, this note
 
 Looks up the AlphaMissense pathogenicity probability + class for the canonical NAT2 \\*5 variant (I114T at UniProt position 114) — a slow-acetylator allele in the CRC-relevant NAT2 carcinogen-detoxification pathway.
 
-**The first call triggers the AlphaMissense download** (~5 GB stream-decompress + filter; 5 – 15 min depending on connection). Subsequent calls hit the cached parquet and are instantaneous.
+**The first call triggers the AlphaMissense download** (about 5 GB stream-decompress + filter; 5 – 15 min depending on connection). Subsequent calls hit the cached parquet and are instantaneous.
 """),
 
         code(title="AlphaMissense lookup: NAT2 I114T (the *5 slow-acetylator marker)", source="""
@@ -266,7 +266,7 @@ If the lookup returns `None`, the most common cause is `alt_aa == wild-type at t
 
 ### Background
 
-[gnomAD](https://gnomad.broadinstitute.org/) (Genome Aggregation Database; Karczewski et al., *Nature* **581**, 434, 2020; v4 update 2024) aggregates whole-exome and whole-genome sequencing from over 800,000 individuals. For every observed variant it reports the allele frequency overall and stratified by ancestry — the latter is essential for pharmacogenomics, where some variants are common in one population but rare in another (DPYD\\*2A is ~1.5% in non-Finnish Europeans but ~0.05% in East Asians, and that drives regional 5-FU dosing recommendations).
+[gnomAD](https://gnomad.broadinstitute.org/) (Genome Aggregation Database; Karczewski et al., *Nature* **581**, 434, 2020; v4 update 2024) aggregates whole-exome and whole-genome sequencing from over 800,000 individuals. For every observed variant it reports the allele frequency overall and stratified by ancestry — the latter is essential for pharmacogenomics, where some variants are common in one population but rare in another (DPYD\\*2A is around 1.5% in non-Finnish Europeans but around 0.05% in East Asians, and that drives regional 5-FU dosing recommendations).
 
 For this notebook, the question gnomAD answers is: **"how common is this variant?"**. Combined with AlphaMissense's pathogenicity call, the joint reading triages variants into actionable categories:
 
@@ -341,7 +341,7 @@ Why this matters for the pharmacogenes specifically: for many slow-acetylator (N
 
 The published RaSP install is currently unmaintained: it pins to Python 3.6 + PyTorch 1.2.0 + DSSP / Reduce build dependencies, and the upstream README states that *"Colab no longer supports the dependencies of RaSP and there is currently no solution in the pipeline."* Re-running RaSP locally would mean significant dependency-rescue work and would still be Linux-only.
 
-We sidestep the install entirely by looking up against the upstream's **precomputed** saturated single-residue predictions. Source: `rasp_preds_exp_strucs_gnomad_clinvar.csv` (~414 MB) at the upstream's [share link](https://sid.erda.dk/sharelink/fFPJWflLeE) — saturated predictions on every human protein with a crystal structure.
+We sidestep the install entirely by looking up against the upstream's **precomputed** saturated single-residue predictions. Source: `rasp_preds_exp_strucs_gnomad_clinvar.csv` (about 414 MB) at the upstream's [share link](https://sid.erda.dk/sharelink/fFPJWflLeE) — saturated predictions on every human protein with a crystal structure.
 
 The trade-off: we cannot run RaSP on a user-supplied custom PDB (e.g. a mutant fold from notebook 01). Predictions are fixed to the canonical experimental structures used by the upstream's saturation run.
 
@@ -355,7 +355,7 @@ The trade-off: we cannot run RaSP on a user-supplied custom PDB (e.g. a mutant f
         markdown("""
 ### What this cell does
 
-Looks up the RaSP ΔΔG prediction for NAT2 I114T (the same variant we used for AlphaMissense and gnomAD). **The first call triggers the RaSP download** (~414 MB → demo-set filter → ~1 MB parquet; 1 – 3 min). After that, lookups are instantaneous.
+Looks up the RaSP ΔΔG prediction for NAT2 I114T (the same variant we used for AlphaMissense and gnomAD). **The first call triggers the RaSP download** (about 414 MB, then demo-set filter to a small parquet around 1 MB; 1 – 3 min). After that, lookups are instantaneous.
 """),
 
         code(title="RaSP lookup: NAT2 I114T ΔΔG", source="""
@@ -392,12 +392,12 @@ The done-signal for step 14 (per `_planning/PROJECT_PROPOSAL.md` § 7) is that t
 
 | # | Variant | Archetype | What we expect |
 |---|---|---|---|
-| 1 | **NAT2 I114T (\\*5)** | LoF, stability-driven (slow acetylator) | AlphaMissense leans pathogenic; RaSP ΔΔG > 0; gnomAD common (~25–50% population-stratified) |
-| 2 | **NAT2 K268R (\\*11/\\*12)** | Common, normal-function baseline | AlphaMissense leans benign; RaSP ΔΔG ≈ 0; gnomAD very common (~40–50% global) |
+| 1 | **NAT2 I114T (\\*5)** | LoF, stability-driven (slow acetylator) | AlphaMissense leans pathogenic; RaSP ΔΔG > 0; gnomAD common (around 25–50%, population-stratified) |
+| 2 | **NAT2 K268R (\\*11/\\*12)** | Common, normal-function baseline | AlphaMissense leans benign; RaSP ΔΔG ≈ 0; gnomAD very common (around 40–50% global) |
 | 3 | **DPYD I560S (\\*13)** | LoF, stability-driven (rare; replaces \\*2A which is splice and outside protein-level prediction tools' scope) | AlphaMissense pathogenic; RaSP ΔΔG > 0; gnomAD rare |
 | 4 | **KRAS G12C** | Pathogenic but NOT stability-driven (oncogenic driver) | AlphaMissense pathogenic; RaSP ΔΔG small (G12C does not destabilise the fold — the activation mechanism is altered nucleotide binding); gnomAD near zero germline |
 
-The point of #4 is the **negative control**: if every "pathogenic" variant came back with a large positive ΔΔG, RaSP would be useless as an additional signal. KRAS G12C should show that the helpers are not just rubber-stamping pathogenic variants as destabilising. #2 is the second negative control: a genuinely common, functionally normal variant should land near AlphaMissense 0, near RaSP ΔΔG 0, and at gnomAD AF ~0.5.
+The point of #4 is the **negative control**: if every "pathogenic" variant came back with a large positive ΔΔG, RaSP would be useless as an additional signal. KRAS G12C should show that the helpers are not just rubber-stamping pathogenic variants as destabilising. #2 is the second negative control: a genuinely common, functionally normal variant should land near AlphaMissense 0, near RaSP ΔΔG 0, and at gnomAD AF around 0.5.
 
 ### A note on DPYD\\*2A
 
@@ -481,9 +481,9 @@ for _, r in calibration_df.iterrows():
 print()
 print("Done-signal verdict (step 14, per PROJECT_PROPOSAL.md § 7):")
 print("- LoF stability-driven   (NAT2 I114T): expect AM>0.5, RaSP>0, common gnomAD")
-print("- Common benign baseline (NAT2 K268R): expect AM<0.34, RaSP~0, common gnomAD")
+print("- Common benign baseline (NAT2 K268R): expect AM<0.34, RaSP near 0, common gnomAD")
 print("- LoF stability-driven   (DPYD I560S): expect AM>0.5, RaSP>0, rare gnomAD")
-print("- Pathogenic non-stability (KRAS G12C): expect AM>0.5, RaSP small, ~0 gnomAD")
+print("- Pathogenic non-stability (KRAS G12C): expect AM>0.5, RaSP small, near 0 gnomAD")
 print("=" * 70)
 """),
 
