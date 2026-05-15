@@ -2,7 +2,7 @@
 
 End-to-end in-silico screening pipeline for wet-lab triage in cancer drug discovery.
 
-**Status:** 9 of 13 planned steps complete (notebooks 00 / 01 / 02 / 03 built and Colab-verified end-to-end on ERK2; notebook 04 in progress; 05–07 + the production runner planned). See [`_planning/PROJECT_PROPOSAL.md`](_planning/PROJECT_PROPOSAL.md) for the full delivery plan and decisions log.
+**Status:** 12 of 13 planned steps complete (notebooks 00–06 done and Colab-verified end-to-end on ERK2; step 13 prune pass remaining). Next: notebook 07 (variant effect prediction — AlphaMissense + RaSP ΔΔG + gnomAD, promoted from post-13-step on 2026-05-14), notebook 08 (mutation analysis, renumbered from 07), notebook 09 (small-N mechanism-of-action), notebook 99 (production runner). See [`_planning/PROJECT_PROPOSAL.md`](_planning/PROJECT_PROPOSAL.md) for the full delivery plan and decisions log; see [`_planning/MECHANISM_OF_ACTION_SCOPE.md`](_planning/MECHANISM_OF_ACTION_SCOPE.md) for the small-N MoA scope.
 
 ## What this is
 
@@ -66,30 +66,60 @@ Keeps only the compounds where *both* methods (gnina + ML rescorer **and** Boltz
 
 *Wet-lab analogue:* combining two assay readouts so the wet lab focuses on the strongest dual-evidence candidates.
 
-### 07 — Mutation analysis
+### 07 — Predict variant effects (computational priors)
 
-**Input:** two completed pipeline runs — one on wild-type, one on a mutant variant. **Output:** side-by-side comparison.
+**Input:** a variant identifier (UniProt accession + position + alt amino acid). **Output:** per-variant computational priors — pathogenicity, stability change, allele frequency.
+
+Combines three published tools: **AlphaMissense** (DeepMind, 2023) for sequence/evolution-based pathogenicity probability, **RaSP** (eLife, 2023) for structure-based ΔΔG protein-stability prediction, and **gnomAD** for population allele frequency. These priors are independent of the binding-pose pipeline and capture mechanisms (variant destabilises the fold, variant is evolutionarily intolerable, variant is common in this ancestry) that binding-pose analysis alone misses.
+
+Especially important for the slow-vs-rapid acetylator story: protein-stability change is the dominant mechanism behind many slow-acetylator phenotypes, and RaSP ΔΔG captures it directly.
+
+*Wet-lab analogue:* the chart-review step before ordering a functional assay — "is this variant likely pathogenic on paper before we spend money characterising it?"
+
+### 08 — Mutation analysis
+
+**Input:** two completed pipeline runs — one on wild-type, one on a mutant variant. **Output:** side-by-side comparison, including the variant priors from notebook 07.
 
 Tells you how the mutation reshaped the binding pocket, which interactions are gained / lost, which compounds drop out of the shortlist, and which new ones appear. The whole point in cancer drug discovery: **drug-resistance studies** — EGFR T790M (osimertinib resistance), BRAF V600E, KIT D816V, and so on.
 
 *Wet-lab analogue:* testing your inhibitor panel against a known resistance-mutation construct.
 
+### 09 — Mechanism of action / small-N
+
+**Input:** a target + a handful (N ≤ 10) of candidate compounds + optional variant list. **Output:** one HTML report per (compound × variant) pair plus a summary CSV.
+
+The single-compound or small-N companion to the library-screening flow. Different scientific question (mechanism-of-action investigation, pharmacogenomic-variant-effect prediction) and different output shape (per-compound clinical-decision-support card, not a ranked library shortlist). Five demos covering CRC pharmacogenomics (NAT2 + isoniazid, CYP2D6 + tamoxifen, DPYD\*2A + 5-FU, irinotecan + UGT1A1\*28) and one oncogenic driver (sotorasib + KRAS G12C). See [`_planning/MECHANISM_OF_ACTION_SCOPE.md`](_planning/MECHANISM_OF_ACTION_SCOPE.md).
+
+*Wet-lab analogue:* the in-silico version of a focused enzyme kinetics or binding study on one drug-target pair, before ordering the wet-lab assay.
+
 ### 99 — Production runner
 
-The single notebook for routine use once the methodology is established. Chains 01 → 06 (and 07 per mutant) into one click-and-run. Tighter teaching content than 00–07 — it's the audited version reviewers and funders read. Includes an optional AlphaFold-3 toggle (academic-access only, off by default; see [§9 of the proposal](_planning/PROJECT_PROPOSAL.md)).
+The single notebook for routine use once the methodology is established. Chains 01 → 06 + 07 + 08 (per mutant) — or 09 in MoA mode — into one click-and-run. Has a `RUN_MODE = library | moa` toggle (library mode runs the full 1k–10k-compound screen; moa mode runs the small-N per-compound report flow). Tighter teaching content than 00–09 — it's the audited version reviewers and funders read. Includes an optional AlphaFold-3 toggle (academic-access only, off by default; see [§9 of the proposal](_planning/PROJECT_PROPOSAL.md)).
 
 *Wet-lab analogue:* the lab's SOP — same protocol, applied to whatever target + library you give it.
 
 ## The whole flow in one diagram
+
+Library screening (notebooks 00–06):
 
 ```
 target sequence ──► 01 fold ──┐
                               ├──► 03 dock ──► 04 ML rescore ──┐
 SMILES library ──► 02 prep ───┤                                ├──► 06 consensus ──► shortlist.sdf
                               └──► 05 Boltz-2 co-fold + score ─┘
-
-                              (07 mutation_analysis diffs WT-run vs mutant-run)
 ```
+
+Variant + MoA (notebooks 07–09; build on the library flow):
+
+```
+variant ID ──► 07 variant_effect ──┬──► 08 mutation_analysis (library-side WT vs mutant diff)
+              prediction           │
+              (AlphaMissense       └──► 09 moa_small_n (per-compound HTML reports for N ≤ 10)
+               + RaSP ΔΔG
+               + gnomAD)
+```
+
+Notebook 99 ties everything into one runner with a `RUN_MODE = library | moa` toggle.
 
 ## Stack at a glance
 
@@ -104,6 +134,8 @@ SMILES library ──► 02 prep ───┤                                ├
 | Interaction fingerprints | ProLIF | Local |
 | ML rescoring (per-target) | scikit-learn / XGBoost | Local |
 | Consensus rank + report | pandas | Local |
+| Variant priors (pathogenicity, ΔΔG, allele frequency) | AlphaMissense + RaSP + gnomAD | Local (CPU) |
+| Per-compound HTML report (MoA) | py3Dmol + ProLIF + pandas | Local |
 
 See [`_planning/CONSULTANT_REVIEW.md`](_planning/CONSULTANT_REVIEW.md) for why these tools were chosen over alternatives.
 
@@ -148,7 +180,7 @@ python -c "import rdkit, prolif, posebusters, datamol; print('ok')"
 jupyter lab
 ```
 
-GPU-bound notebooks (01 fold, 03 dock, 05 co-fold) run only on Colab. CPU notebooks (00, 02, 04, 06, 07) run on either Colab or your laptop.
+GPU-bound notebooks (01 fold, 03 dock, 05 co-fold) run only on Colab. CPU notebooks (00, 02, 04, 06, 07, 08, 09) run on either Colab or your laptop.
 
 ## For collaborators / for Claude
 

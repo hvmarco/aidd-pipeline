@@ -16,12 +16,12 @@
 | ADMET / drug-likeness | locked | RDKit-built-in pre-filter (Lipinski/QED/SA-score/PAINS) before docking; **ADMETlab 3** API on top candidates only. |
 | GPU access | locked | **Colab-only** (free or Pro). All GPU steps are Colab notebooks; local runs are CPU-only via gnina. |
 | v1 throughput | locked | **1k–10k compounds per screen.** Notebook-driven with a per-stage cached-file batch driver; resumable. |
-| Triage philosophy | locked | **Defensible consensus** — Boltz-2 affinity rank AND gnina+IFP-rescorer rank must both place a compound in top X% (X tunable, default 5%). |
+| Triage philosophy | locked (revised 2026-05-15) | **Defensible consensus, target-dependent filter.** Two methods implemented in `src/aidd/consensus.py`: (a) **intersection** — Boltz-2 rank AND rescorer rank both in top X% (original rule, default X=5%); (b) **rank_product_topk** — top K compounds by rank product across the joined cohort (fallback when lanes are uncorrelated). Filter choice is per-target, decided empirically via notebook 06 § 9's threshold sweep + cross-lane Spearman ρ: intersection when lanes correlate (p<0.05, ρ>0.15); rank_product_topk when they don't. See §7 step 12 for the ERK2 finding. |
 | Notebook structure | locked | **8 teaching notebooks (00–07) + 1 production runner (99)**, each numbered notebook is one pipeline stage; each is independently runnable from cached intermediate outputs in `data/derived/<target>/<stage>/`. The runner (99) is built last, after 07. |
-| Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 07 (`07_mutation_analysis`)** compares WT vs mutant outputs (structure, IFP, docking shortlist) for drug-resistance / structural-impact studies. See §8. |
+| Mutation analysis | locked | **Part of the standard workflow.** The pipeline is target-agnostic — any of notebooks 01–06 accepts either a wild-type or mutant sequence/PDB as input. A dedicated **notebook 08 (`08_mutation_analysis`, renumbered from 07 on 2026-05-14)** compares WT vs mutant outputs (structure, IFP, docking shortlist, ΔΔG) for drug-resistance / structural-impact studies. Builds on per-variant computational priors from new **notebook 07 (`07_variant_effect_prediction`)**: AlphaMissense pathogenicity + RaSP ΔΔG + gnomAD allele frequency. See §8. |
 | AF3 fold provider toggle in notebook 99 | locked | Notebook 99 (production runner) gets an **optional `FOLD_PROVIDER` parameter** with values `"colabfold"` (AF2, default — open and reproducible for all users) and `"af3_server"` (AlphaFold Server API — requires per-user academic API key in Colab Secrets, owner-only path). Both branches produce the same canonical `<target>_best.pdb` so downstream cells don't care which folder was used. Single notebook with one toggle, not two parallel notebooks. See §9. |
-| Research-domain focus | locked (2026-05-12) | The pipeline is **shaped for pharmacogenomics + variant-function studies in common solid tumours** (colorectal, lung, breast, GI, GU, ovarian). The central question is "*how does an amino-acid variant change enzyme function / drug binding?*" — not generic SBVS. **Notebook 07 (mutation analysis) is the headline notebook**, not an extension. Notebook 99 takes `(target, variants=[…])` and runs the WT-vs-variant comparison as its primary mode. The four headline demos are listed in §10. |
-| Post-13-step roadmap | locked (2026-05-12) | After steps 1–13 close, the prioritised additions are: **(1) AlphaMissense lookup** (zero-compute pathogenicity scores per variant) — ~½ day; **(1.5) gnomAD allele-frequency lookup** (population-stratified variant prioritisation) — ~½ day, paired with (1); **(2) RaSP ΔΔG integration** for loss-of-function variants — ~1–2 days; **(3) PharmGKB / CPIC clinical ground-truth lookup** — ~1–2 days; **(4) fpocket binding-site detection** on variant folds — ~1 day. **Resumable per-compound docking (originally priority 4.5) was pulled forward to the first commit of step 11** — the same caching pattern serves both gnina's `dock_library` and Boltz-2's `predict_library`. See §11 for the rationale and ordering. |
+| Research-domain focus | locked (2026-05-12) | The pipeline is **shaped for pharmacogenomics + variant-function studies in common solid tumours** (colorectal, lung, breast, GI, GU, ovarian). The central question is "*how does an amino-acid variant change enzyme function / drug binding?*" — not generic SBVS. **Notebook 08 (mutation analysis) is the headline library-side notebook** (paired with new notebook 07 `07_variant_effect_prediction` providing per-variant computational priors, and notebook 09 `09_moa_small_n` for small-N MoA), not extensions. Notebook 99 takes `(target, variants=[…])` and runs the WT-vs-variant comparison as its primary mode. The headline demos are listed in §10. |
+| Post-13-step roadmap | locked (2026-05-12; updated 2026-05-14) | After step 13 closes, the build resumes with **notebook 07** (`07_variant_effect_prediction`) — AlphaMissense (pathogenicity) + gnomAD (allele frequency) + RaSP (ΔΔG stability), bundled as one new notebook (~2–3 days combined). **Promoted from post-13-step Priorities 1, 1.5, 2 into the main timeline (2026-05-14)** so notebooks 08 and 09 can show per-variant computational priors on day one rather than retrofitting them later. Then **notebook 08** (`08_mutation_analysis`, formerly nb 07 — library-side WT-vs-mutant diff), **notebook 09** (`09_moa_small_n` — small-N mechanism-of-action; see [`MECHANISM_OF_ACTION_SCOPE.md`](MECHANISM_OF_ACTION_SCOPE.md)), and **notebook 99** (production runner with `RUN_MODE = library | moa`). Remaining post-13-step items in §11: **PharmGKB / CPIC** clinical ground-truth lookup (~1–2 days), **fpocket** binding-site detection on variant folds (~1 day), **PCM** proteochemometrics (~3–5 days, optional). Resumable per-compound docking (originally priority 4.5) was pulled forward to the first commit of step 11. See §11 for the rationale and ordering. |
 
 See [CONSULTANT_REVIEW.md](CONSULTANT_REVIEW.md) for the architectural reasoning behind the reopened/new rows.
 
@@ -56,8 +56,10 @@ AIinDD2025/                              # repo root (rename to something projec
 │   ├── 04_score_classical.ipynb         # IFPs, ML rescoring
 │   ├── 05_dock_boltz.ipynb              # Boltz-2 co-folding + affinity (fast lane)
 │   ├── 06_consensus_and_shortlist.ipynb # consensus ranker → shortlist.sdf
-│   ├── 07_mutation_analysis.ipynb       # diff WT vs mutant runs (structure, IFP, shortlist)
-│   ├── 99_screen_library.ipynb          # end-to-end runner, accepts a mutations= list
+│   ├── 07_variant_effect_prediction.ipynb # AlphaMissense + RaSP ΔΔG + gnomAD per-variant priors
+│   ├── 08_mutation_analysis.ipynb       # diff WT vs mutant runs (structure, IFP, shortlist, ΔΔG)
+│   ├── 09_moa_small_n.ipynb             # small-N mechanism-of-action: per-compound HTML reports
+│   ├── 99_screen_library.ipynb          # end-to-end runner (RUN_MODE = library | moa); accepts mutations= list
 │   └── 99_explore_course_examples/      # frozen copies of the most useful course nbs
 │
 ├── src/aidd/                            # importable package
@@ -169,8 +171,15 @@ Re-sequenced for the hybrid stack. Each step has a clear "done" signal so we can
 9. **`notebooks/03_dock_gnina.ipynb`** — gnina docking of prepared ligands against the 4FV7 receptor; PoseBusters QC. Redock reference ligand as sanity check (RMSD < 2 Å). **Done when** the redock passes.
 10. **`notebooks/04_score_classical.ipynb`** — ProLIF IFPs + gnina-score features → sklearn/XGBoost rescorer trained on `data/labels/erk2_training.tsv`. Lifts the Tuesday-challenge pattern. **Done when** the rescorer beats raw gnina affinity on the held-out fold (ROC-AUC or EF1%).
 11. **`notebooks/05_dock_boltz.ipynb`** — Boltz-2 co-folding + affinity on the same ligand set; Colab notebook. **Done when** affinity scores correlate (Spearman ρ > 0.3) with the labels.
-12. **`notebooks/06_consensus_and_shortlist.ipynb`** — joins outputs from #10 and #11, applies the consensus rule (top-X% in both), emits `shortlist.sdf` + `shortlist.csv` with per-compound poses, IFPs, scores, ADMET flags. **Done when** the shortlist on ERK2 contains a respectable fraction of the labelled actives (sanity check before going to real target).
-13. **Second prune pass.** REFERENCE notebooks whose code we have fully lifted are removed from `_archive/`. **Done when** `_archive/` only contains items we haven't extracted yet.
+12. **`notebooks/06_consensus_and_shortlist.ipynb`** — joins outputs from #10 and #11, applies the consensus rule (target-dependent filter; see §0 "Triage philosophy"), emits `shortlist.sdf` + `shortlist.csv` with per-compound poses, IFPs, scores, ADMET flags. Section 9 sweeps both filter methods × four thresholds + reports cross-lane Spearman ρ for empirical operating-point selection. **Done when** the shortlist on ERK2 contains a respectable fraction of the labelled actives. **Closed 2026-05-15 (commit `a846fe2`):** rank_product_topk @ TOP=0.10 → 42-compound shortlist, 25/126 actives, 19.8 % recall, 1.95× enrichment; intersection rule empirically broken on this target (Spearman ρ = 0.08 between lanes — statistically uncorrelated); rank-product alternative added to consensus module in the same step.
+13. **Second prune pass — audit project artifacts.** *(Revised scope 2026-05-15.)* The original wording said "remove fully-lifted `_archive/` items" but is superseded by CLAUDE.md's "`_archive/` is the historical record, read-only" rule: `src/aidd/` modules cite archive paths as their source-of-record, so pruning would create dead citation links and erase methodology provenance. Revised scope: audit project artifacts (scratch files, stub modules, tracked build artifacts, outdated planning drafts) that WE created during the build for items that are no longer needed. **Done when** the audit completes and surfaced candidates are dispositioned. **Closed 2026-05-15 (commit `2b872f7`, empty):** audit found 0 scratch / stub / build-artifact candidates; `_archive/` untouched as the citation record; 2 untracked planning docs (DEV_CHAT_HANDOVER_2026-05-14.md, HOUSEKEEPING_BATCH.md) deleted from workspace; KILL_LIST.md + INVENTORY.md kept tracked as historical record of step 2's first prune.
+
+*Steps 14–17 are the post-13-step substantive work added during the 2026-05-14 scoping pass (see §0 "Post-13-step roadmap" row and [`MECHANISM_OF_ACTION_SCOPE.md`](MECHANISM_OF_ACTION_SCOPE.md)). Dependency order: 14 lands before 15 and 16 — both consume nb 07's per-variant priors; 17 needs 14 + 15 + 16 done; 13 was independent of all of the above and is now closed.*
+
+14. **`src/aidd/variants.py` + `src/aidd/stability.py` + `notebooks/07_variant_effect_prediction.ipynb`** — AlphaMissense pathogenicity lookup, RaSP ΔΔG prediction, gnomAD allele-frequency lookup; packaged as per-variant computational priors consumed by notebooks 08 and 09. **Done when** the helpers return sensible values for a known calibration set (e.g. NAT2\*5: AlphaMissense flags pathogenic + RaSP ΔΔG > 0; DPYD\*2A: similar) and the notebook smoke-tests end-to-end on Colab + locally.
+15. **`notebooks/08_mutation_analysis.ipynb`** (renumbered from 07 on 2026-05-14). WT-vs-mutant pipeline diff (Cα-RMSD, IFP diff, shortlist diff, ΔΔG from nb 07). **Done when** the DPYD\*2A + 5-FU walkthrough produces a coherent comparison report including nb 07's priors; six brief follow-up demos run on the same template.
+16. **`notebooks/09_moa_small_n.ipynb`** + **`src/aidd/inputs.py`** — small-N mechanism-of-action driver with per-compound HTML reports; see [`MECHANISM_OF_ACTION_SCOPE.md`](MECHANISM_OF_ACTION_SCOPE.md). **Done when** the NAT2 + isoniazid deep walkthrough produces 4 per-compound HTML reports (WT + \*5 + \*6 + \*7) + a summary CSV; four brief follow-up demos run on the same template.
+17. **`notebooks/99_screen_library.ipynb`** — production runner with `FOLD_PROVIDER` and `RUN_MODE` toggles. **Done when** library mode produces a shortlist on the ERK2 + headline-demo set and `moa` mode produces per-compound HTML reports on a small smoke set; both Colab and local-CPU paths verified.
 
 ## 8. Mutation analysis — the headline workflow
 
@@ -192,12 +201,12 @@ The pipeline is **target-agnostic by design**, so the same notebooks (01–06) a
 | Level | Question | How the pipeline answers it | Effort beyond a normal WT run |
 |---|---|---|---|
 | **1. Mutant structure** | "What does the mutant look like?" | Notebook 01 with the mutant sequence | None (just paste the sequence) |
-| **2. Structural difference** | "How is the mutant fold different from WT?" | `aidd.structures.ca_rmsd` + `distogram` + visual diff in notebook 07 | None (helpers already exist) |
-| **3. Stability change (ΔΔG)** | "Is the mutant more / less stable?" | Future: wrap RaSP (open-source, ML-based) into `aidd.stability` + a cell in notebook 07 | ~1–2 days of integration work, deferred until requested |
-| **4. Effect on drug binding** | "Does my candidate library still bind the mutant?" | Run notebooks 02–06 against the mutant; notebook 07 diffs the consensus shortlists | ~2× compute (one full screen per genotype); no new code |
+| **2. Structural difference** | "How is the mutant fold different from WT?" | `aidd.structures.ca_rmsd` + `distogram` + visual diff in notebook 08 | None (helpers already exist) |
+| **3. Stability change (ΔΔG)** | "Is the mutant more / less stable?" | Per-variant RaSP ΔΔG in `aidd.stability` + a cell in **notebook 07 (`07_variant_effect_prediction`)** (promoted into the main timeline 2026-05-14, was post-13-step Priority 2) | ~1–2 days of integration work |
+| **4. Effect on drug binding** | "Does my candidate library still bind the mutant?" | Run notebooks 02–06 against the mutant; notebook 08 diffs the consensus shortlists | ~2× compute (one full screen per genotype); no new code |
 | **5. Atom-level dynamics** | "Did the mutation change a hinge motion, allosteric loop?" | **Out of scope** (would require MD simulation, separate field) | Not planned |
 
-### Notebook 07 — `07_mutation_analysis.ipynb`
+### Notebook 08 — `08_mutation_analysis.ipynb` (renumbered from 07 on 2026-05-14)
 
 **Purpose:** consume the outputs of two complete pipeline runs (WT and mutant) and produce a clinically-meaningful comparison.
 
@@ -210,13 +219,13 @@ The pipeline is **target-agnostic by design**, so the same notebooks (01–06) a
 - Diff of the two final shortlists: compounds that drop out, compounds that survive, compounds that newly appear.
 - A summary table fit for a wet-lab handoff: "in WT we'd prioritise these N compounds; in the mutant the priorities reshuffle to these M, of which X are new candidates".
 
-**When built:** after notebook 06. The mutation comparison is built on top of the consensus shortlist, so it cannot land before 06 does.
+**When built:** after notebook 07 (`07_variant_effect_prediction`). Notebook 08 consumes nb 07's per-variant priors (AlphaMissense, RaSP ΔΔG, gnomAD) plus the consensus shortlist from nb 06, so neither can land before notebook 08 does.
 
 **Effort estimate:** 1–2 days. Most of the work is a comparison notebook; the underlying helpers (`ca_rmsd`, `distogram`, `compute_ifp`) already exist.
 
 ### Implications for downstream architecture
 
-- **Notebook 99 (production runner)** must accept a `mutations` parameter (list of variants to run alongside the WT). Each mutant becomes its own `data/derived/<target>_<mutation>/` directory; notebook 07 is invoked once per mutant to produce the comparison artefacts.
+- **Notebook 99 (production runner)** must accept a `mutations` parameter (list of variants to run alongside the WT). Each mutant becomes its own `data/derived/<target>_<mutation>/` directory; notebook 08 is invoked once per mutant to produce the comparison artefacts.
 - **`data/derived/` naming convention** is updated to allow per-variant subdirectories: `data/derived/<target>[_<variant>]/<stage>/`. Wild-type omits the variant suffix.
 
 ## 9. Notebook 99 — optional AlphaFold 3 fold provider toggle
@@ -290,12 +299,14 @@ The pipeline code is **largely unchanged**; the framing, examples, and pedagogic
 | 04 score_classical  | Light    | Examples and feature framing update; mechanics unchanged |
 | 05 dock_boltz       | Light    | Examples update |
 | 06 consensus        | Light    | Examples update |
-| **07 mutation_analysis** | **Major (headline)** | DPYD walkthrough as pedagogical centrepiece + AlphaMissense + RaSP + substrate framing + 3 brief additional demos |
-| **99 runner**       | **Major** | Re-shaped to take `(target, variants=[…])`; default examples are the headline-demo set; AF3 toggle stays |
+| **07 variant_effect_prediction** *(new)* | **Major (new notebook)** | AlphaMissense + RaSP ΔΔG + gnomAD per-variant priors; promoted from post-13-step Priorities 1, 1.5, 2 on 2026-05-14 |
+| **08 mutation_analysis** | **Major (headline)** | (Was 07.) DPYD walkthrough as pedagogical centrepiece + consumes nb 07 priors (AlphaMissense + RaSP ΔΔG + gnomAD) + substrate framing + 6 brief additional demos |
+| **09 moa_small_n** *(new)* | **Major (new notebook)** | Small-N mechanism-of-action; per-compound HTML reports + summary CSV; 5 demos covering CRC pharmacogenomics + KRAS; see [`MECHANISM_OF_ACTION_SCOPE.md`](MECHANISM_OF_ACTION_SCOPE.md) |
+| **99 runner**       | **Major** | Re-shaped to take `(target, variants=[…])`; `RUN_MODE = library | moa` toggle; default examples are the headline-demo set; AF3 toggle stays |
 
-### Headline demo set (notebook 07 + notebook 99 defaults)
+### Headline demo set (notebook 08 + notebook 09 + notebook 99 defaults)
 
-Four cases covering all the named cancer types and the four distinct mutation mechanisms encountered in clinical oncology:
+Cases covering all the named cancer types and the distinct mutation mechanisms encountered in clinical oncology. Five of these — DPYD, NAT2, CYP2D6, UGT1A1, KRAS — are shared with notebook 09 (small-N MoA; see [`MECHANISM_OF_ACTION_SCOPE.md`](MECHANISM_OF_ACTION_SCOPE.md)). The other two (ESR1, BRCA1) are library-side only: ESR1 stays library-only to keep notebook 09 focused on Natallia's pharmacogenomics / drug-metabolism enzymes, and BRCA1 is excluded from notebook 09 because olaparib binds PARP, not BRCA1, so the variant doesn't fit notebook 09's "variant alters binding" Q-shape.
 
 | Demo | Cancer(s) | Mechanism | Drug / substrate |
 |---|---|---|---|
@@ -304,15 +315,16 @@ Four cases covering all the named cancer types and the four distinct mutation me
 | **ESR1 Y537S + tamoxifen** | breast | nuclear-receptor ligand-binding-domain hot-spot (GoF / endocrine resistance) | tamoxifen / fulvestrant |
 | **BRCA1 LoF + olaparib** | ovarian, breast | synthetic-lethality LoF (drug binds PARP, not BRCA — the mutation creates the vulnerability) | olaparib (PARP-bound) |
 | **CYP2D6 *4 / *10 + tamoxifen** | breast (pharmacogene activation) | Phase I oxidation — poor metabolisers under-activate tamoxifen → endoxifen | tamoxifen (substrate; canonical breast-cancer pharmacogene story) |
-| **NAT2 slow acetylator (\*5 / \*6 / \*7)** | colorectal, bladder (cancer risk) | Phase II acetylation — slow acetylators under-detoxify aromatic-amine carcinogens | aromatic amines (substrate; cancer-risk angle vs cancer-therapy angle) |
+| **NAT2 slow acetylator (\*5 / \*6 / \*7)** | colorectal, bladder (cancer risk) | Phase II acetylation — slow acetylators under-detoxify aromatic-amine carcinogens | isoniazid (textbook substrate for slow-acetylator phenotype; structural argument generalises to aromatic-amine carcinogens for the cancer-risk angle) |
+| **Irinotecan + UGT1A1\*28** | colorectal | Phase II glucuronidation — UGT1A1\*28 homozygotes have reduced clearance → severe neutropenia | irinotecan (substrate; FDA-label genotype-guided dosing) |
 
-Each illustrates a *distinct* clinical mechanism — pharmacogene LoF (DPYD), oncogenic driver (KRAS), ligand-pocket GoF (ESR1), synthetic-lethality LoF (BRCA1), drug-activation pharmacogene (CYP2D6), and carcinogen-metabolism pharmacogene / cancer-risk angle (NAT2). The deep walkthrough (DPYD) gets the full pedagogical structure; the other five get brief "*the same pattern applies here*" sections at the end of notebook 07. CYP2D6 and NAT2 together cover the two complementary halves of cancer pharmacogenomics — therapy response and cancer risk — and are both directly in the project owner's research domain.
+Each illustrates a *distinct* clinical mechanism — pharmacogene LoF (DPYD), oncogenic driver (KRAS), ligand-pocket GoF (ESR1), synthetic-lethality LoF (BRCA1), drug-activation pharmacogene (CYP2D6), carcinogen-metabolism pharmacogene / cancer-risk angle (NAT2), and chemotherapy-clearance pharmacogene (UGT1A1). The deep walkthrough (DPYD) gets the full pedagogical structure; the other six get brief "*the same pattern applies here*" sections at the end of notebook 08. CYP2D6, NAT2, and UGT1A1 together cover three faces of cancer pharmacogenomics — therapy response (CYP2D6, tamoxifen activation), cancer risk (NAT2, carcinogen detoxification), and chemotherapy clearance (UGT1A1, irinotecan dosing) — all directly in the project owner's research domain.
 
-### Why these four
+### Why this set
 
 - **Covers all named cancer types** (colorectal, lung, breast, ovarian; GI / GU covered by colorectal + pancreatic).
-- **Covers all four major mutation mechanisms** clinicians encounter.
-- **All four have clinical ground truth** (CPIC guidelines for DPYD; FDA labels for sotorasib, fulvestrant, olaparib). Predictions are falsifiable.
+- **Covers all major mutation mechanisms** clinicians encounter — pharmacogene LoF, oncogenic driver, ligand-pocket GoF, synthetic-lethality LoF, Phase I + Phase II metabolism PGx.
+- **All have clinical ground truth** (CPIC guidelines for DPYD and UGT1A1; FDA labels for sotorasib, fulvestrant, olaparib, irinotecan-UGT1A1 dosing). Predictions are falsifiable.
 - **DPYD as the walkthrough specifically** because: most clinically actionable example in colorectal cancer; demonstrates *substrate* binding (the framing shift); is a *loss-of-function* variant (exercises the RaSP integration).
 
 ### TP53 R175H as a future "no-paired-drug" demo
@@ -323,7 +335,9 @@ A fifth demo, useful later: TP53 R175H is the #1 most-mutated variant across all
 
 These additions extend the pipeline's coverage beyond the closed-out 13-step plan. They are **not** prerequisites for shipping the production runner (99) — they are enhancements specifically tuned to the §10 research focus. Listed in priority order by value-per-effort for this domain.
 
-### Priority 1 — AlphaMissense lookup (~½ day)
+> **2026-05-14 update:** Priorities 1 (AlphaMissense), 1.5 (gnomAD), and 2 (RaSP ΔΔG) were **promoted out of post-13-step into the main timeline** as the new **notebook 07** (`07_variant_effect_prediction`). The detailed reasoning for each promoted item remains here as historical reference; the active scope lives in §0 decisions table (post-13-step row), §7 step 14, and the implementation plan in [`MECHANISM_OF_ACTION_SCOPE.md`](MECHANISM_OF_ACTION_SCOPE.md). Priorities 3 (PharmGKB / CPIC), 4 (fpocket), and 5 (PCM) remain post-13-step.
+
+### Priority 1 — AlphaMissense lookup (~½ day) **[PROMOTED to notebook 07 on 2026-05-14]**
 
 **What:** DeepMind's [AlphaMissense](https://www.science.org/doi/10.1126/science.adg7492) model (2023) scores every possible missense variant in the human proteome with a pathogenicity probability. Pre-computed scores are downloadable; we look up the answer rather than running the model.
 
@@ -331,7 +345,7 @@ These additions extend the pipeline's coverage beyond the closed-out 13-step pla
 
 **Integration:** new helper `aidd.variants.alphamissense_score(uniprot_id, position, alt_aa)`. ~50 lines plus a one-time download of the supplementary CSV (~5 GB). Added as a column to notebook 07's variant-analysis output.
 
-### Priority 1.5 — gnomAD allele-frequency lookup (~½ day)
+### Priority 1.5 — gnomAD allele-frequency lookup (~½ day) **[PROMOTED to notebook 07 on 2026-05-14]**
 
 **What:** [gnomAD](https://gnomad.broadinstitute.org/) (Genome Aggregation Database) gives population-level allele frequencies for >800,000 exomes and genomes, stratified by ancestry. We query it per variant via the public GraphQL API.
 
@@ -347,7 +361,7 @@ For pharmacogenes, gnomAD also surfaces **population-stratified frequencies** �
 
 **When this lands:** ideally in the same round as AlphaMissense (Priority 1), since the two are paired conceptually. Together they form the "*should we even bother docking this variant?*" pre-filter.
 
-### Priority 2 — RaSP ΔΔG prediction (~1–2 days)
+### Priority 2 — RaSP ΔΔG prediction (~1–2 days) **[PROMOTED to notebook 07 on 2026-05-14]**
 
 **What:** [RaSP](https://elifesciences.org/articles/82593) (Rapid Stability Predictions, 2023) is an open-source ML-based predictor of variant stability changes (ΔΔG, kcal/mol). Runs in seconds per mutation on CPU.
 
@@ -369,7 +383,7 @@ For pharmacogenes, gnomAD also surfaces **population-stratified frequencies** �
 
 **Why for this pipeline:** for *any* pharmacogene the project owner takes on beyond the demo set, hand-curating a binding-site box is the manual step that won't scale. fpocket on WT and on the variant fold ALSO gives "*pocket volume changed from N to M Å³*" as a direct readout of the variant's structural impact — independent signal beyond ΔΔG.
 
-**Integration:** wraps in `aidd.docking` as an alternative to hand-curated binding-site coordinates. New cell in notebook 07 reporting pocket-geometry deltas WT vs variant.
+**Integration:** wraps in `aidd.docking` as an alternative to hand-curated binding-site coordinates. New cell in notebook 08 reporting pocket-geometry deltas WT vs variant.
 
 ### Priority 4.5 — Resumable per-compound docking (~½ day)
 

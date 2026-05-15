@@ -23,7 +23,7 @@ The builders share three small helpers from [`_nb_helpers.py`](_nb_helpers.py): 
 
 ## How to use this folder
 
-**First time / learning mode** — open the notebooks in numerical order (`00` → `06`) and run them cell by cell. Each notebook has markdown blocks explaining both the biology and the technical choices, with a learning-objectives header and a recap at the end. Designed for clinicians, ML/data folks new to structural biology, and Bachelor / Master students.
+**First time / learning mode** — open the notebooks in numerical order (`00` → `09`) and run them cell by cell. Each notebook has markdown blocks explaining both the biology and the technical choices, with a learning-objectives header and a recap at the end. Designed for clinicians, ML/data folks new to structural biology, and Bachelor / Master students. The first 7 (`00`–`06`) cover the library-screening flow; `07` covers per-variant computational priors; `08` covers WT-vs-mutant library comparison; `09` covers small-N mechanism-of-action reports.
 
 **Routine screening mode / audit-ready report** — once the pipeline is dialled in for a target, `99_screen_library.ipynb` runs the whole flow end-to-end *and* is the artefact reviewers / professors / funders will read. It still teaches — just tighter than 00–06: short background per stage, methods with DOIs, a "Methods summary" cell near the top, and an executive-summary recap. Reviewers drill into 00–06 for detail.
 
@@ -31,15 +31,29 @@ The builders share three small helpers from [`_nb_helpers.py`](_nb_helpers.py): 
 
 ## Pipeline overview
 
+**Library-screening flow** (notebooks 00–06):
+
 ```
-sequence / PDB ──► 01_fold_target ──┐                                            ┌──► 07_mutation_analysis (WT vs mutant diff)
-(WT or mutant)                      │                                            │
-                                    ├──► 03_dock_gnina ──► 04_score_classical ──┤
+sequence / PDB ──► 01_fold_target ──┐
+(WT or mutant)                      │
+                                    ├──► 03_dock_gnina ──► 04_score_classical ──┐
 SMILES library ──► 02_prepare ──────┤                                            ├──► 06_consensus ──► shortlist.sdf
-                                    └──► 05_dock_boltz ───────────────────────────┘
+                                    └──► 05_dock_boltz ────────────────────────┘
 ```
 
-For **mutation studies** (e.g. drug-resistance screens), run notebooks 01–06 once for the wild-type and once per mutant variant. Notebook 07 then consumes the two `data/derived/<target>[_<variant>]/` trees and produces the side-by-side comparison: Cα-RMSD, IFP diff, side-by-side pocket viewer, and a diff of the two final shortlists.
+**Variant + MoA flow** (notebooks 07–09; build on top of the library flow):
+
+```
+variant                                 ┌──► 08_mutation_analysis (library-side WT vs mutant diff: structure + IFP + shortlist + ΔΔG)
+(e.g. NAT2 *5,                          │
+ DPYD*2A)    ──► 07_variant_effect ─────┤
+                  prediction            │
+                  (AlphaMissense        └──► 09_moa_small_n (small-N: per-compound × per-variant HTML reports)
+                   + RaSP ΔΔG
+                   + gnomAD)
+```
+
+For **mutation studies** (e.g. drug-resistance screens), run notebooks 01–06 once for the wild-type and once per mutant variant. Notebook 07 produces the per-variant computational priors (pathogenicity, stability, allele frequency). Notebook 08 then consumes the two `data/derived/<target>[_<variant>]/` trees plus the 07 priors and produces the side-by-side comparison: Cα-RMSD, IFP diff, side-by-side pocket viewer, ΔΔG, and a diff of the two final shortlists.
 
 ## The notebooks
 
@@ -52,10 +66,12 @@ For **mutation studies** (e.g. drug-resistance screens), run notebooks 01–06 o
 | 04  | `_build_04_score_classical.py`           | `04_score_classical.ipynb`          | IFP + ML rescorer (sklearn / XGBoost)         | **Colab** (gnina cache build), then any CPU | done (scaffold OOF AUC: RF 0.58, XGB 0.58 vs baseline 0.48 on ERK2; per-fold range 0.40–0.69; single-split realization 0.66 superseded by 5-fold OOF aggregate, 2026-05-13) |
 | 05  | `_build_05_dock_boltz.py`                | `05_dock_boltz.ipynb`               | Boltz-2 co-folding + affinity (fast lane)     | **Colab GPU**        | done (scaffold AUC: Boltz-2 affinity 0.65, affinity_probability 0.70 vs baseline 0.48; Spearman vs gnina +0.27 on ERK2 413-cpd labelled subset; 412 predicted + 1 boltz_input_invalid; A100 ~124 s/compound, 2026-05-13) |
 | 06  | `_build_06_consensus_and_shortlist.py`   | `06_consensus_and_shortlist.ipynb`  | consensus rank → `shortlist.sdf`              | local CPU / Colab    | done (rank_product_topk @ TOP=0.10 on ERK2 412-cpd joined cohort: shortlist 42 compounds, 25/126 actives, 19.8% recall, 1.95x enrichment vs random; intersection rule empirically broken on this target — Spearman rho=0.08 p=0.11 between rescorer-OOF and Boltz lanes; per-target operating-point sweep + cross-method rho in section 9; 2026-05-14) |
-| 07  | `_build_07_mutation_analysis.py`         | `07_mutation_analysis.ipynb`        | diff WT vs mutant runs (structure + IFP + shortlist) | local CPU / Colab    | planned (after 06) |
-| 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner (accepts `mutations=` list) | Colab Pro+ recommended | planned (after 07) |
+| 07  | `_build_07_variant_effect_prediction.py` | `07_variant_effect_prediction.ipynb`| AlphaMissense + RaSP ΔΔG + gnomAD: per-variant computational priors | local CPU / Colab | planned (after step 13) |
+| 08  | `_build_08_mutation_analysis.py`         | `08_mutation_analysis.ipynb`        | diff WT vs mutant runs (structure + IFP + shortlist + ΔΔG) | local CPU / Colab | planned (after 07) |
+| 09  | `_build_09_moa_small_n.py`               | `09_moa_small_n.ipynb`              | small-N mechanism-of-action: per-compound HTML reports + summary CSV | local CPU / Colab | planned (after 08) |
+| 99  | `_build_99_screen_library.py`            | `99_screen_library.ipynb`           | end-to-end runner (`RUN_MODE` = `library` or `moa`; accepts `mutations=` list) | Colab Pro+ recommended | planned (after 09) |
 
-Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold), `03` (gnina is Linux-native — Windows / macOS users go via Colab or WSL2), and `05` (Boltz-2). Notebook `04` is **Colab-only for its first run on a target** (it builds the labelled-subset docking cache via gnina), then runs anywhere on CPU once the cache is on Drive. The remaining CPU-only notebooks (`00`, `02`, `06`, `07`) work on Windows / macOS locally.
+Every notebook works in Colab (the setup cell handles installs + repo clone). Colab is **mandatory** for `01` (ColabFold), `03` (gnina is Linux-native — Windows / macOS users go via Colab or WSL2), and `05` (Boltz-2). Notebook `04` is **Colab-only for its first run on a target** (it builds the labelled-subset docking cache via gnina), then runs anywhere on CPU once the cache is on Drive. The remaining CPU-only notebooks (`00`, `02`, `06`, `07`, `08`, `09`) work on Windows / macOS locally.
 
 ## Inputs / outputs at each stage
 
@@ -70,8 +86,10 @@ The contract between notebooks is simple: each stage reads from and writes to `d
 | 04 score_classical | poses SDF + receptor + activity labels   | `data/derived/<target>[_<variant>]/scoring/{rescorer.pkl, scored_poses.parquet}` |
 | 05 dock_boltz      | prepared SDF + target sequence/structure | `data/derived/<target>[_<variant>]/boltz/{poses.sdf, affinity.csv}`    |
 | 06 consensus       | scored_poses.parquet + affinity.csv      | `data/derived/<target>[_<variant>]/shortlist/{shortlist.sdf, shortlist.csv}` |
-| 07 mutation_analysis | two completed `data/derived/<target>[_<variant>]/` trees | `data/derived/<target>/mutations/{wt_vs_<variant>.html, ...}` |
-| 99 runner          | a target + a SMILES library + optional `mutations=` list | the full chain above (and notebook 07 per variant) |
+| 07 variant_effect_prediction | variant identifier (UniProt accession + position + alt aa) | `data/derived/<target>[_<variant>]/variant_priors/{alphamissense.json, rasp_ddg.json, gnomad.json}` |
+| 08 mutation_analysis | two completed `data/derived/<target>[_<variant>]/` trees + variant priors from 07 | `data/derived/<target>/mutations/{wt_vs_<variant>.html, ...}` |
+| 09 moa_small_n     | a target + a small (N≤10) SMILES set + optional `VARIANTS=` list + variant priors from 07 | `data/derived/<target>[_<variant>]/moa_reports/{summary.csv, <compound>.html}` |
+| 99 runner          | a target + a SMILES library (library mode) OR a small-N MoA input (moa mode) + optional `mutations=` list | the full chain above (notebook 08 per variant; notebook 09 logic in `moa` mode) |
 
 ## Notebook conventions
 
