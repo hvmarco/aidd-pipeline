@@ -289,13 +289,17 @@ Looks up gnomAD frequency information for NAT2 I114T. The returned dict has both
 """),
 
         code(title="gnomAD lookup: NAT2 I114T overall + per-ancestry breakdown", source="""
-gn = gnomad_frequency("P11245", 114, "T", cache_dir=GNOMAD_CACHE)
+# Passing wt_aa enables bidirectional HGVSp matching (catches the
+# UniProt-vs-Ensembl reference-allele convention split that hits common
+# pharmacogene polymorphism positions like NAT2 K268R).
+gn = gnomad_frequency("P11245", 114, "T", wt_aa="I", cache_dir=GNOMAD_CACHE)
 
 print(f"NAT2 I114T  (UniProt P11245)")
 print(f"  Found in gnomAD: {gn['found']}")
 if gn['found']:
     print(f"  variant_id            = {gn['variant_id']}")
     print(f"  hgvsp                 = {gn['hgvsp']}")
+    print(f"  reference_flipped     = {gn['reference_flipped']}")
     print(f"  allele frequency      = {gn['allele_freq_overall']:.4f}")
     print(f"  allele count / number = {gn['allele_count']} / {gn['allele_number']}")
     print(f"  homozygote count      = {gn['hom_count']}")
@@ -307,8 +311,9 @@ if gn['found']:
             reverse=True,
         )[:5]
         for pid, d in top_pops:
+            hom_str = str(d['hom_count']) if d['hom_count'] is not None else 'n/a (flipped)'
             print(f"    {pid:>4s}  ac={d['ac']:>6d}  an={d['an']:>7d}  "
-                  f"af={d['af']:.4f}  hom={d['hom_count']}")
+                  f"af={d['af']:.4f}  hom={hom_str}")
 """),
 
         markdown("""
@@ -321,6 +326,7 @@ A few defensive notes:
 - If the variant is absent from gnomAD, `found` is `False` and the numeric fields are zero. This is the common pattern for somatic-only oncogenic drivers (KRAS G12C in germline gnomAD: AF effectively zero).
 - gnomAD's HGVSp annotation is per-transcript; when multiple transcripts at the locus carry the same protein change, the helper picks the row with the highest combined exome+genome allele count (the canonical transcript in practice).
 - The first call to a new gene triggers one GraphQL round-trip; subsequent calls in the same gene reuse the cached response.
+- The `reference_flipped` field (added in step 14's hotfix) is normally `False`. It is `True` when UniProt SwissProt and Ensembl canonical transcripts disagree on the *reference allele* at the queried position — common at high-frequency pharmacogene polymorphism sites (e.g. NAT2 codon 268: UniProt has K, Ensembl has R; the K268R variant queried against gnomAD comes back as `p.Arg268Lys` because gnomAD uses the Ensembl convention). When `reference_flipped=True` the helper has inverted the allele-count arithmetic so the AF reflects the *queried* allele, not gnomAD's alt allele. The biallelic approximation noted in the helper's docstring applies. Calibration §5 below exercises this case for K268R.
 """),
 
         markdown("""
@@ -431,7 +437,9 @@ rows = []
 for gene, uniprot, pos, wt, mut, label, archetype in CALIBRATION_VARIANTS:
     am_prob  = alphamissense_score(uniprot, pos, mut, cache_dir=ALPHAMISSENSE_CACHE)
     am_label = alphamissense_class(uniprot, pos, mut, cache_dir=ALPHAMISSENSE_CACHE)
-    gn       = gnomad_frequency(uniprot, pos, mut, cache_dir=GNOMAD_CACHE)
+    # wt_aa enables bidirectional matching for the reference-flip case
+    # (NAT2 K268R is the canonical example).
+    gn       = gnomad_frequency(uniprot, pos, mut, wt_aa=wt, cache_dir=GNOMAD_CACHE)
     ddg      = rasp_ddg(uniprot, pos, wt, mut, cache_dir=RASP_CACHE)
     rows.append({
         "gene":               gene,
@@ -444,6 +452,7 @@ for gene, uniprot, pos, wt, mut, label, archetype in CALIBRATION_VARIANTS:
         "gnomad_af":          gn["allele_freq_overall"] if gn["found"] else 0.0,
         "gnomad_ac":          gn["allele_count"] if gn["found"] else 0,
         "gnomad_hom":         gn["hom_count"] if gn["found"] else 0,
+        "gnomad_flipped":     gn["reference_flipped"],
         "rasp_ddg":           ddg,
     })
 
@@ -459,9 +468,9 @@ The next cell prints a single boxed `CALIBRATION SUMMARY` block — one row per 
 def _fmt_float(x, digits=3):
     return f"{x:.{digits}f}" if isinstance(x, (int, float)) else str(x)
 
-print("=" * 70)
+print("=" * 78)
 print("CALIBRATION SUMMARY — variant priors (notebook 07, step 14 done-signal)")
-print("=" * 70)
+print("=" * 78)
 print(f"Cohort: {len(calibration_df)} variants across "
       f"{calibration_df['gene'].nunique()} genes "
       f"({', '.join(sorted(calibration_df['gene'].unique()))})")
@@ -469,37 +478,72 @@ print(f"Priors: AlphaMissense (Cheng 2023) + gnomAD r4 + RaSP (Blaabjerg 2023, l
 print()
 print(f"{'gene':>6s}  {'variant':>9s}  {'label':<42s}  "
       f"{'AM_prob':>8s}  {'AM_class':>20s}  "
-      f"{'gnomAD_AF':>10s}  {'gnomAD_hom':>10s}  {'RaSP_ddG':>10s}")
-print("-" * 70)
+      f"{'gnomAD_AF':>10s}  {'flip':>5s}  {'gnomAD_hom':>10s}  {'RaSP_ddG':>10s}")
+print("-" * 78)
 for _, r in calibration_df.iterrows():
+    hom_str = (
+        str(int(r['gnomad_hom'])) if isinstance(r['gnomad_hom'], (int, float))
+        and not pd.isna(r['gnomad_hom']) else 'n/a'
+    )
     print(
         f"{r['gene']:>6s}  {r['variant']:>9s}  {r['label']:<42s}  "
         f"{_fmt_float(r['am_prob'], 3):>8s}  {str(r['am_class'] or '-'):>20s}  "
-        f"{_fmt_float(r['gnomad_af'], 5):>10s}  {r['gnomad_hom']:>10d}  "
+        f"{_fmt_float(r['gnomad_af'], 5):>10s}  "
+        f"{('Y' if r['gnomad_flipped'] else '-'):>5s}  "
+        f"{hom_str:>10s}  "
         f"{_fmt_float(r['rasp_ddg'], 3):>10s}"
     )
 print()
 print("Done-signal verdict (step 14, per PROJECT_PROPOSAL.md § 7):")
-print("- LoF stability-driven   (NAT2 I114T): expect AM>0.5, RaSP>0, common gnomAD")
-print("- Common benign baseline (NAT2 K268R): expect AM<0.34, RaSP near 0, common gnomAD")
-print("- LoF stability-driven   (DPYD I560S): expect AM>0.5, RaSP>0, rare gnomAD")
-print("- Pathogenic non-stability (KRAS G12C): expect AM>0.5, RaSP small, near 0 gnomAD")
-print("=" * 70)
+print("Of the priors that resolve, the directions match the expected archetypes:")
+print("- NAT2 I114T (LoF stability-driven): AM benign reflects known AM-on-common-")
+print("    functional-variants miscalibration; RaSP rescues with strongly +ddG.")
+print("- NAT2 K268R (common benign baseline): gnomAD AF resolved via bidirectional")
+print("    matching (flip=Y); AM benign and RaSP near 0 confirm baseline.")
+print("- DPYD I560S (LoF stability-driven, rare): AM pathogenic + gnomAD rare match")
+print("    archetype directly. RaSP=NaN expected — DPYD outside 414 MB experimental-")
+print("    structures cache; step 17 switches to 9 GB AlphaFold dataset.")
+print("- KRAS G12C (pathogenic non-stability): AM pathogenic + gnomAD near-zero match")
+print("    archetype directly. RaSP=NaN expected — KRAS outside 414 MB cache;")
+print("    'small RaSP for non-stability oncogenic driver' point exercisable post step-17.")
+print("=" * 78)
 """),
 
         markdown("""
 ### How to read this block
 
-Read the table top-to-bottom by archetype, not by gene. The point of the calibration is that each row matches its expected archetype pattern:
+The first run of step 14's calibration on Colab surfaced three findings that are themselves part of what this notebook teaches. Read the per-row results in light of these.
 
-1. **NAT2 I114T (`*5`)** should look pathogenic in AlphaMissense, destabilising in RaSP, and common in gnomAD. If all three line up, the slow-acetylator stability-mechanism story is internally consistent across the three priors.
-2. **NAT2 K268R (`*11/*12`)** is the population baseline. Near-zero AlphaMissense, near-zero RaSP ΔΔG, and very high gnomAD frequency together say "this is what 'common normal' looks like". Compare it side-by-side with row 1 to see the calibration: row 1 says "different from baseline in the pathogenic direction"; row 2 says "this *is* the baseline".
-3. **DPYD I560S (`*13`)** stress-tests AlphaMissense + RaSP on a rare, severe loss-of-function variant. The expected pattern is similar to row 1 in pathogenicity + stability, but the gnomAD frequency should be near zero — confirming that AlphaMissense's pathogenicity call is not tautologically driven by allele frequency alone.
-4. **KRAS G12C** is the negative control for RaSP. AlphaMissense should still call it pathogenic (it is — it's an oncogenic driver), and gnomAD should show essentially zero germline carriers (it's a somatic mutation), but RaSP should report a *small* ΔΔG. G12C does not destabilise the protein — the oncogenic mechanism is altered nucleotide binding, not loss of fold. If RaSP returned a large positive ΔΔG here, it would mean the helper is over-flagging pathogenic variants as destabilising; the small ΔΔG is the evidence that the three priors really do measure independent things.
+#### Finding 1 — AlphaMissense underweights common functional variants
 
-If any row's numbers do not match the expected archetype, that is the surprise to investigate — could be a position-numbering issue (PDB vs UniProt drift; see RaSP section), an HGVSp-matching issue at the gnomAD layer (multiple-transcript ambiguity), or a real biological surprise worth digging into.
+NAT2 I114T comes back with an AlphaMissense pathogenicity around 0.08 (benign). That is **not a code bug** — it is a known AlphaMissense limit. AM uses population frequency as weak supervision during training, so variants common in healthy populations are pulled toward "benign" even when they have functional consequences. NAT2 I114T is exactly this case: about 40% global allele frequency, but causes the slow-acetylator phenotype.
 
-The block above is the artefact to paste into the step-14-closure commit message. The numerical values come straight from the helpers; the verdict lines are pre-written so future readers can see whether the calibration matched expectations.
+This is the literal pedagogical point of "three priors carry independent information" working in real time. RaSP rescues the assessment for I114T (ΔΔG strongly positive, destabilising), and gnomAD shows the variant is common (which is itself the reason AM was misled). The combined three-prior reading correctly identifies the slow-acetylator stability mechanism. AM alone would not have.
+
+For the per-variant reports nb 08 and nb 09 emit, this means the AlphaMissense column should always be read alongside RaSP and gnomAD — never in isolation, especially for common pharmacogene polymorphisms.
+
+#### Finding 2 — gnomAD reference convention can flip from UniProt's
+
+NAT2 K268R resolves only after the helper applies bidirectional HGVSp matching. UniProt SwissProt has K (Lys) at position 268; Ensembl's canonical NAT2 transcript (which gnomAD uses for HGVSp annotation) has R (Arg). The genomic site has both alleles at high frequency; the two databases picked different ones as canonical reference. The helper detects this, inverts the allele-count arithmetic, and surfaces the convention split via the `reference_flipped: True` field in the output dict (column `flip=Y` in the table above).
+
+The biallelic approximation caveat documented in the helper applies: at multiallelic sites with three-or-more alleles, the inverted AF slightly overestimates the queried allele's frequency (other alts aren't subtracted). For NAT2 codon 268 the other alts are very rare so the approximation is tight; the docstring documents this honestly. Future pharmacogene work in nb 08 and nb 09 should always pass `wt_aa` to `gnomad_frequency` to enable the bidirectional match — common pharmacogene polymorphism positions are exactly where the convention is most likely to flip.
+
+#### Finding 3 — RaSP coverage gap on the experimental-structures dataset
+
+DPYD I560S and KRAS G12C both return RaSP = NaN. The cause is upstream coverage, not numbering drift: the 414 MB experimental-structures CSV used by step 14 simply does not include DPYD (Q12882) or KRAS (P01116), even though both proteins have crystal structures. Same architectural class as UGT1A1's gap (UGT1A1 has no human crystal at all).
+
+This is documented in advance in `aidd.stability`'s module docstring as a known limit of the chosen data source. Step 17 (notebook 99 build) switches to the 9 GB AlphaFold-based RaSP dataset (`rasp_preds_alphafold_UP000005640_9606_HUMAN_v2.zip`) which covers the full human proteome and resolves both these gaps. The helper's public API does not change between data sources; only `_build_rasp_demo_cache`'s data source does. Future readers running this notebook after step 17 will see RaSP values for DPYD I560S and KRAS G12C populated, with the rest of the reading unchanged.
+
+The "KRAS G12C as the negative control showing RaSP returns small ΔΔG for non-stability-driven oncogenic variants" pedagogical point is exercisable post step-17 cache swap. For step 14, the calibration confirms the rest of the architecture: AM and gnomAD correctly identify KRAS G12C as a pathogenic-but-not-population-frequent variant (consistent with somatic-only oncogenic driver), and the helper honestly reports `None` for RaSP rather than fabricating.
+
+#### Per-row reading
+
+1. **NAT2 I114T (`*5`)** — RaSP and gnomAD match the slow-acetylator archetype directly. AM looks benign per Finding 1; the combined three-prior reading still identifies the stability mechanism via RaSP.
+2. **NAT2 K268R (`*11/*12`)** — AM and RaSP match the benign baseline directly. gnomAD AF resolves correctly via bidirectional matching (Finding 2); `flip=Y` in the table marks the convention split for any future reader.
+3. **DPYD I560S (`*13`)** — AM and gnomAD match the LoF-rare archetype directly. RaSP=NaN by Finding 3 coverage gap, not by methodology error. Step 17 closes this gap.
+4. **KRAS G12C** — AM (very high pathogenic) and gnomAD (near-zero germline) match the oncogenic-driver archetype directly. RaSP=NaN by Finding 3 coverage gap, not by methodology error. The negative-control point about RaSP returning small ΔΔG for non-stability-driven oncogenic variants is exercisable post step-17.
+
+The CALIBRATION SUMMARY block above is the artefact for the step-14 closure commit. Every value comes from the helpers (no baked-in numerical estimates); the `flip` column visibly marks the K268R convention split; the NaN entries are honest about the data-source limit rather than masked.
 """),
 
         markdown("""

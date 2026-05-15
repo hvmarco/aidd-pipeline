@@ -285,6 +285,7 @@ def gnomad_frequency(
     position: int,
     alt_aa: str,
     *,
+    wt_aa: str | None = None,
     dataset: str = GNOMAD_DEFAULT_DATASET,
     cache_dir: PathLike | None = None,
 ) -> dict:
@@ -298,21 +299,57 @@ def gnomad_frequency(
                                  ID (or ``None`` when not found).
     - ``hgvsp``                — protein-level HGVS string (e.g.
                                  ``"p.Ile114Thr"``) or ``None``.
+    - ``reference_flipped``    — ``True`` when matched via bidirectional
+                                 fallback because UniProt SwissProt and
+                                 Ensembl canonical disagreed on the
+                                 reference allele at ``position`` (see the
+                                 ``wt_aa`` parameter docs below). ``False``
+                                 for direct matches and the not-found case.
     - ``allele_freq_overall``  — combined exome+genome allele frequency
-                                 (``ac / an``); ``0.0`` when not found.
+                                 *for the queried allele*; ``0.0`` when
+                                 not found. When ``reference_flipped``
+                                 is ``True``, computed as
+                                 ``(an - ac_recorded) / an`` with the
+                                 biallelic approximation noted in
+                                 :func:`_summarise_gnomad_variant`.
     - ``allele_count``,
-      ``allele_number``        — combined exome+genome counts (``ac``, ``an``).
-    - ``hom_count``            — combined homozygote count.
+      ``allele_number``        — combined exome+genome counts for the
+                                 queried allele.
+    - ``hom_count``            — combined homozygote count for the queried
+                                 allele. ``None`` when ``reference_flipped``
+                                 is ``True`` (the queried-allele
+                                 homozygote count is not directly
+                                 derivable from gnomAD's per-record fields).
     - ``populations``          — dict keyed by gnomAD population code
                                  (e.g. ``"nfe"``, ``"afr"``, ``"eas"``,
                                  ``"sas"``, ``"amr"``, ``"asj"``, ``"fin"``,
                                  ``"mid"``, ``"ami"``, ``"oth"``); each value
                                  is ``{"ac": int, "an": int, "af": float,
-                                 "hom_count": int}``. Empty dict when
-                                 not found.
+                                 "hom_count": int | None}``. Empty dict
+                                 when not found.
 
     Per-gene responses are cached at ``<cache_dir>/<gene>_<dataset>.json``
     so the second variant in the same gene resolves without a round-trip.
+
+    Parameters
+    ----------
+    uniprot_id, position, alt_aa
+        Protein-centric identifier of the variant to look up.
+    wt_aa
+        OPTIONAL wild-type 1-letter AA code. When provided, enables
+        bidirectional HGVSp matching that catches the case where UniProt
+        SwissProt and Ensembl canonical transcripts disagree on the
+        reference allele at ``position``. This is common for high-frequency
+        pharmacogene polymorphisms (NAT2 K268R / R268K is the canonical
+        example: UniProt P11245 has K at 268; Ensembl canonical NAT2 has
+        R at 268; gnomAD annotates the genomic SNP as ``p.Arg268Lys``).
+        When the bidirectional fallback fires, the returned dict carries
+        ``reference_flipped: True`` and the allele-count arithmetic is
+        inverted so the AF refers to ``alt_aa`` (the queried allele),
+        not gnomAD's alt allele. When omitted, only direct matches are
+        tried (preserves the pre-step-14-hotfix behaviour).
+    dataset, cache_dir
+        See module-level constants.
 
     Raises
     ------
@@ -333,8 +370,13 @@ def gnomad_frequency(
     gene = DEMO_SET_UNIPROT_IDS[uniprot_id]
     cache_path = _resolve_cache_dir(cache_dir, "gnomad")
     variants = _load_gnomad_gene_cache(gene, dataset=dataset, cache_dir=cache_path)
-    selected = _select_matching_variant(variants, position=int(position), alt_aa=alt_aa.upper())
-    return _summarise_gnomad_variant(selected)
+    selected, flipped = _select_matching_variant(
+        variants,
+        position=int(position),
+        alt_aa=alt_aa.upper(),
+        wt_aa=wt_aa.upper() if wt_aa else None,
+    )
+    return _summarise_gnomad_variant(selected, flipped=flipped)
 
 
 def _load_gnomad_gene_cache(
@@ -401,48 +443,129 @@ def _select_matching_variant(
     *,
     position: int,
     alt_aa: str,
-) -> dict | None:
-    """Pick the variant whose hgvsp matches (position, alt_aa).
+    wt_aa: str | None = None,
+) -> tuple[dict | None, bool]:
+    """Pick the gnomAD variant matching (position, alt_aa).
+
+    Returns a ``(variant, flipped)`` tuple. ``flipped`` is ``True`` when the
+    match is reverse-direction — UniProt SwissProt's reference allele at
+    ``position`` differs from the Ensembl canonical transcript's reference
+    used by gnomAD. This happens at common pharmacogene polymorphism sites
+    (NAT2 K268R / R268K is the canonical example) where two alleles co-exist
+    at high frequency and the two databases pick different ones as canonical.
+
+    Bidirectional matching requires the caller to pass ``wt_aa`` so the
+    flipped match can be disambiguated from other variants at the same
+    position. When ``wt_aa`` is ``None``, only direct matches are tried
+    (legacy behaviour, preserves backward compatibility).
 
     Variants without hgvsp (synonymous, intronic, splice, etc.) are skipped.
     When multiple transcripts carry the same protein change, prefer the row
     with the highest combined exome+genome allele count — usually the
     canonical transcript.
+
+    Doctests
+    --------
+    >>> # K268R: NAT2 SwissProt has K at 268; gnomAD canonical transcript
+    >>> # has R at 268. Bidirectional fallback resolves it.
+    >>> mock = [{"hgvsp": "p.Arg268Lys", "variant_id": "8-18400806-G-A",
+    ...          "exome": {"ac": 1000, "an": 100000}, "genome": {"ac": 0, "an": 0}}]
+    >>> v, flipped = _select_matching_variant(mock, position=268, alt_aa="R", wt_aa="K")
+    >>> v["variant_id"], flipped
+    ('8-18400806-G-A', True)
+
+    >>> # When BOTH a direct AND a flipped match exist, direct wins.
+    >>> mock2 = mock + [{"hgvsp": "p.Lys268Arg", "variant_id": "fake-direct",
+    ...                  "exome": {"ac": 5, "an": 100}, "genome": {"ac": 0, "an": 0}}]
+    >>> v, flipped = _select_matching_variant(mock2, position=268, alt_aa="R", wt_aa="K")
+    >>> v["variant_id"], flipped
+    ('fake-direct', False)
+
+    >>> # Without wt_aa the legacy direct-only path runs (no flipped detection).
+    >>> v, flipped = _select_matching_variant(mock, position=268, alt_aa="R")
+    >>> v is None, flipped
+    (True, False)
     """
     alt_3 = _AA_1TO3.get(alt_aa)
     if alt_3 is None:
         raise ValueError(f"alt_aa {alt_aa!r} is not a standard 1-letter AA code.")
-    matches: list[tuple[int, dict]] = []
+    wt_3 = _AA_1TO3.get(wt_aa) if wt_aa is not None else None
+
+    direct_matches: list[tuple[int, dict]] = []
+    flipped_matches: list[tuple[int, dict]] = []
     for v in variants:
         hgvsp = v.get("hgvsp") or ""
         if not hgvsp.startswith("p.") or len(hgvsp) < 8:
             continue
-        wt_3 = hgvsp[2:5]
-        alt_3_v = hgvsp[-3:]
+        v_wt_3 = hgvsp[2:5]
+        v_alt_3 = hgvsp[-3:]
         try:
-            pos_v = int(hgvsp[5:-3])
+            v_pos = int(hgvsp[5:-3])
         except ValueError:
             continue
-        if pos_v != position or alt_3_v != alt_3:
+        if v_pos != position:
             continue
-        if wt_3 not in _AA_3TO1:
+        if v_wt_3 not in _AA_3TO1 or v_alt_3 not in _AA_3TO1:
             continue
         ex_ac = ((v.get("exome") or {}).get("ac")) or 0
         gn_ac = ((v.get("genome") or {}).get("ac")) or 0
-        matches.append((ex_ac + gn_ac, v))
-    if not matches:
-        return None
-    matches.sort(key=lambda t: t[0], reverse=True)
-    return matches[0][1]
+        ac_total = ex_ac + gn_ac
+        if wt_3 is not None:
+            if v_wt_3 == wt_3 and v_alt_3 == alt_3:
+                direct_matches.append((ac_total, v))
+            elif v_alt_3 == wt_3 and v_wt_3 == alt_3:
+                flipped_matches.append((ac_total, v))
+        else:
+            # Legacy direct-only path: enforce alt match only.
+            if v_alt_3 == alt_3:
+                direct_matches.append((ac_total, v))
+
+    if direct_matches:
+        direct_matches.sort(key=lambda t: t[0], reverse=True)
+        return direct_matches[0][1], False
+    if flipped_matches:
+        flipped_matches.sort(key=lambda t: t[0], reverse=True)
+        return flipped_matches[0][1], True
+    return None, False
 
 
-def _summarise_gnomad_variant(variant: dict | None) -> dict:
-    """Reduce a gnomAD variant payload to the columns reported in nb 07."""
+def _summarise_gnomad_variant(
+    variant: dict | None,
+    *,
+    flipped: bool = False,
+) -> dict:
+    """Reduce a gnomAD variant payload to the columns reported in nb 07.
+
+    When ``flipped`` is ``True``, the queried allele is gnomAD's REF allele
+    (UniProt SwissProt and Ensembl canonical disagree on the reference
+    convention at this position; the helper detected the convention split
+    in :func:`_select_matching_variant`). The arithmetic inverts:
+
+    - ``allele_count``  (returned) = ``an - ac_recorded`` — i.e. count of
+      REF (queried) alleles in the population.
+    - ``allele_freq_overall`` = ``(an - ac_recorded) / an``.
+    - per-population ``af`` = ``(pop_an - pop_ac) / pop_an``.
+    - ``hom_count`` = ``None`` (gnomAD records report ALT-allele
+      homozygote counts; deriving the REF-allele homozygote count needs a
+      het-vs-hom decomposition that isn't directly available from a single
+      variant record).
+
+    **Biallelic approximation.** At multiallelic sites with three-or-more
+    alleles, the inverted AF slightly *overestimates* the true REF
+    frequency because the OTHER alts' frequencies aren't subtracted. For
+    pharmacogene polymorphisms where the inversion typically applies (NAT2
+    codon 268, similar in CYP2D6 and a few others), the second-and-later
+    alts at the site are usually rare enough that the approximation is
+    tight to about four decimal places. The ``reference_flipped`` field in
+    the returned dict makes the convention split visible to downstream
+    callers so they can document or validate per-case.
+    """
     if variant is None:
         return {
             "found": False,
             "variant_id": None,
             "hgvsp": None,
+            "reference_flipped": False,
             "allele_freq_overall": 0.0,
             "allele_count": 0,
             "allele_number": 0,
@@ -457,10 +580,17 @@ def _summarise_gnomad_variant(variant: dict | None) -> dict:
     gn_an = genome.get("an") or 0
     ex_hom = exome.get("ac_hom") or 0
     gn_hom = genome.get("ac_hom") or 0
-    total_ac = ex_ac + gn_ac
+    total_ac_recorded = ex_ac + gn_ac
     total_an = ex_an + gn_an
-    total_hom = ex_hom + gn_hom
-    af = (total_ac / total_an) if total_an else 0.0
+    total_hom_alt = ex_hom + gn_hom
+
+    if flipped:
+        total_ac_out = total_an - total_ac_recorded
+        total_hom_out: int | None = None
+    else:
+        total_ac_out = total_ac_recorded
+        total_hom_out = total_hom_alt
+    af = (total_ac_out / total_an) if total_an else 0.0
 
     populations: dict[str, dict] = {}
     for source_pops in (exome.get("populations") or [], genome.get("populations") or []):
@@ -473,16 +603,20 @@ def _summarise_gnomad_variant(variant: dict | None) -> dict:
             cur["an"] += p.get("an") or 0
             cur["hom_count"] += p.get("ac_hom") or 0
     for d in populations.values():
+        if flipped:
+            d["ac"] = d["an"] - d["ac"]
+            d["hom_count"] = None
         d["af"] = (d["ac"] / d["an"]) if d["an"] else 0.0
 
     return {
         "found": True,
         "variant_id": variant.get("variant_id"),
         "hgvsp": variant.get("hgvsp"),
+        "reference_flipped": flipped,
         "allele_freq_overall": af,
-        "allele_count": total_ac,
+        "allele_count": total_ac_out,
         "allele_number": total_an,
-        "hom_count": total_hom,
+        "hom_count": total_hom_out,
         "populations": populations,
     }
 
