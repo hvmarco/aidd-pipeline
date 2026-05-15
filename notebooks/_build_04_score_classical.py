@@ -72,7 +72,7 @@ After running this notebook you will be able to:
 - **Re-runs with cache:** ~2–5 min on any CPU (the rescorer itself trains in seconds; the bulk of the time is IFP computation + feature engineering).
 - **Local Windows / macOS:** if the docking cache already exists on Drive (from a previous Colab run), the rescorer training step works on Windows / macOS. The docking step itself is Linux-only and runs on Colab.
 
-> ⚠ **Why a T4 GPU is recommended even though the rescorer is CPU-friendly.** The notebook's *first* run needs to dock ~700 compounds with gnina (Linux + CUDA). Subsequent re-runs read the cached docks from Drive and run on plain CPU — locally on Windows is fine. Open on T4 the first time, anywhere thereafter.
+> **Note — why a T4 GPU is recommended even though the rescorer is CPU-friendly.** The notebook's *first* run needs to dock ~700 compounds with gnina (Linux + CUDA). Subsequent re-runs read the cached docks from Drive and run on plain CPU — locally on Windows is fine. Open on T4 the first time, anywhere thereafter.
 """),
 
         markdown("""
@@ -115,7 +115,7 @@ What this notebook does **not** do:
 """),
 
         markdown("""
-## 1. Setup
+## 1 - Setup
 
 ### What this section does
 
@@ -226,7 +226,7 @@ print("imports ok")
 """),
 
         markdown("""
-### ⚠ Google Drive authorization — read this before running the next cell
+### Important — Google Drive authorization (read this before running the next cell)
 
 The docking cache for this notebook is **hundreds of megabytes** and takes 60–90 min of GPU time to build. We default to writing it on Google Drive so it survives Colab runtime restarts (idle timeout, browser close, disconnect). The first time you run the next cell on Colab, you will see a Drive permission dialog — click through to allow.
 
@@ -252,7 +252,7 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 """),
 
         markdown("""
-## 2. Inputs — the labelled ERK2 subset
+## 2 - Inputs — the labelled ERK2 subset
 
 ### Background
 
@@ -327,7 +327,7 @@ The `seed=42` makes the inactive sampling reproducible — anyone re-running thi
 """),
 
         markdown("""
-## 3. Stage A — prepare the ligands
+## 3 - Stage A — prepare the ligands
 
 ### Background
 
@@ -365,7 +365,7 @@ The Lipinski + PAINS gate typically retains 70–90 % of the labelled subset. **
 """),
 
         markdown("""
-## 4. Stage B — dock the labelled subset
+## 4 - Stage B — dock the labelled subset
 
 ### Background
 
@@ -454,7 +454,7 @@ We don't filter on PoseBusters here even though notebook `03` did. The reason: a
 """),
 
         markdown("""
-## 5. Stage C — compute interaction fingerprints (IFPs)
+## 5 - Stage C — compute interaction fingerprints (IFPs)
 
 ### Background
 
@@ -489,7 +489,7 @@ If you scroll the column names, you should see the **ATP-pocket residues** as th
 """),
 
         markdown("""
-## 6. Stage D — pose selection + feature merge + label merge
+## 6 - Stage D — pose selection + feature merge + label merge
 
 ### Background
 
@@ -527,7 +527,7 @@ table.head()
 """),
 
         markdown("""
-## 7. Stage E — train Random Forest and XGBoost rescorers
+## 7 - Stage E — train Random Forest and XGBoost rescorers
 
 ### Background
 
@@ -641,7 +641,7 @@ results
 """),
 
         markdown("""
-## 8. Stage F — Out-of-fold predictions for downstream consumption
+## 8 - Stage F — Out-of-fold predictions for downstream consumption
 
 ### Background
 
@@ -718,7 +718,7 @@ If the OOF AUC comes in materially lower (< 0.55) or higher (> 0.75), that's a f
 """),
 
         markdown("""
-## 9. Stage G — ROC curves on both splits
+## 9 - Stage G — ROC curves on both splits
 
 ### Background
 
@@ -769,7 +769,7 @@ If neither rescorer beats the baseline on the scaffold split:
 """),
 
         markdown("""
-## 10. Stage H — what did the Random Forest learn?
+## 10 - Stage H — what did the Random Forest learn?
 
 ### Background
 
@@ -798,7 +798,7 @@ plt.show()
 """),
 
         markdown("""
-## 11. Stage I — save the trained rescorer and the scored-poses table
+## 11 - Stage I — save the trained rescorer and the scored-poses table
 
 ### Background
 

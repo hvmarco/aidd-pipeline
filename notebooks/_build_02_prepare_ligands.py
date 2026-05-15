@@ -102,7 +102,7 @@ One caveat: these filters are heuristics, not laws. There are FDA-approved drugs
 """),
 
         markdown("""
-## 1. Setup
+## 1 - Setup
 
 Detect Colab vs local, set the import path, and turn on `%autoreload` so edits to `src/aidd/` propagate without restarting the kernel.
 """),
@@ -158,7 +158,7 @@ print("imports ok")
 """),
 
         markdown("""
-### ⚠ Google Drive authorization — read this before running the next cell
+### Important — Google Drive authorization (read this before running the next cell)
 
 The prepared-ligand SDF written by this notebook is the input for docking (notebook 03) and rescoring (notebook 04). We default to writing it on Google Drive so it survives Colab runtime restarts (idle timeout, browser close, disconnect). The first time you run the next cell on Colab, you will see a Drive permission dialog — click through to allow.
 
@@ -184,7 +184,7 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 """),
 
         markdown("""
-## 2. Inputs — an ERK2 compound library
+## 2 - Inputs — an ERK2 compound library
 
 ### Background
 
@@ -248,7 +248,7 @@ So `CC(=O)Oc1ccccc1C(=O)O` parses as *methyl–carbonyl–oxygen–benzene–car
 """),
 
         markdown("""
-## 3. Run the full prep pipeline
+## 3 - Run the full prep pipeline
 
 ### Background
 
@@ -279,7 +279,7 @@ A success rate of **95–100%** is normal for a well-curated commercial or acade
 """),
 
         markdown("""
-## 4. Property distributions
+## 4 - Property distributions
 
 ### Background
 
@@ -328,7 +328,7 @@ These come from analyses of marketed drugs, not from first principles. They are 
 """),
 
         markdown("""
-## 5. How many compounds pass each gate?
+## 5 - How many compounds pass each gate?
 """),
 
         code(title="Pass-rate table per gate (Lipinski / Veber / QED / PAINS)", source="""
@@ -379,7 +379,7 @@ Treat PAINS as a **flag**, not a hard filter: a PAINS-positive compound that sho
 """),
 
         markdown("""
-## 6. Visualise one prepared 3-D structure
+## 6 - Visualise one prepared 3-D structure
 
 ### Background
 
@@ -406,7 +406,7 @@ viewer.show()
 """),
 
         markdown("""
-## 7. Cross-reference with activity labels
+## 7 - Cross-reference with activity labels
 
 ### Background
 
@@ -451,7 +451,7 @@ A pass-rate gap of more than ~10 percentage points between actives and inactives
 """),
 
         markdown("""
-## 8. Write the prepared library to an SDF file
+## 8 - Write the prepared library to an SDF file
 
 ### Background
 

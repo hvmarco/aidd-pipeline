@@ -92,7 +92,7 @@ Every approved kinase inhibitor binds at — or close to — the **ATP-binding p
 """),
 
         markdown("""
-## 1. Setup
+## 1 - Setup
 
 Two cells: one detects whether we're on Google Colab vs a local machine and sets the import path; the other imports the libraries we will use. The `%autoreload` magic means edits to `src/aidd/*.py` are picked up without restarting the kernel — useful when iterating.
 """),
@@ -147,7 +147,7 @@ print(f"prolif {plf.__version__}")
 """),
 
         markdown("""
-## 2. Inputs — the ERK2 receptor and its reference ligand
+## 2 - Inputs — the ERK2 receptor and its reference ligand
 
 ### Background
 
@@ -171,7 +171,7 @@ print(f"Ligand:  {LIGAND.relative_to(REPO_ROOT)}")
 """),
 
         markdown("""
-## 3. Compute the interaction fingerprint
+## 3 - Compute the interaction fingerprint
 
 ### What an "interaction fingerprint" actually is
 
@@ -227,7 +227,7 @@ We have not done anything sophisticated yet — we just measured geometric dista
 """),
 
         markdown("""
-## 4. Look at the complex in 3-D
+## 4 - Look at the complex in 3-D
 
 ### Background
 
@@ -255,7 +255,7 @@ If the viewer is empty or your ligand is floating in space rather than inside a 
 """),
 
         markdown("""
-## 5. Highlight the binding-site residues
+## 5 - Highlight the binding-site residues
 
 ### Background
 
@@ -278,7 +278,7 @@ The residues now drawn as gold sticks line the pocket. Hover with your mouse —
 """),
 
         markdown("""
-## 6. The 2-D interaction network (LigNetwork)
+## 6 - The 2-D interaction network (LigNetwork)
 
 ### Background
 
@@ -308,7 +308,7 @@ This is the diagram you would put in a paper figure to describe a new inhibitor'
 """),
 
         markdown("""
-## 7. 3-D view with interactions overlaid
+## 7 - 3-D view with interactions overlaid
 
 ### Background
 

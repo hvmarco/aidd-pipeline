@@ -237,7 +237,7 @@ if not AFFINITY_CSV.exists():
     )
 
 if not POSES_SDF.exists():
-    print(f"⚠ poses.sdf not found at {pretty_path(POSES_SDF, DATA_ROOT, REPO_ROOT)}")
+    print(f"Warning: poses.sdf not found at {pretty_path(POSES_SDF, DATA_ROOT, REPO_ROOT)}")
     print("  The shortlist CSV will still be written; the SDF will be empty.")
     print("  Re-run notebook 04 (or notebook 03's labelled-subset step) on Colab")
     print("  GPU once to repopulate the docking cache on Drive.")
@@ -930,7 +930,8 @@ Three design decisions worth carrying forward:
 
 ### What's next in the pipeline
 
-- **`07_mutation_analysis.ipynb`** (pending) -- runs the same consensus step against a mutant `data/derived/<target>_<variant>/` tree and **diffs** the two shortlists: which compounds drop out, which survive, which newly appear when the protein changes. This is the headline workflow for the precision-oncology framing in `_planning/PROJECT_PROPOSAL.md` section 8.
+- **`07_variant_effect_prediction.ipynb`** (pending) -- per-variant computational priors: AlphaMissense pathogenicity + RaSP ΔΔG stability + gnomAD allele frequency. The canonical source of variant-context columns consumed by notebook 08.
+- **`08_mutation_analysis.ipynb`** (pending) -- runs the same consensus step against a mutant `data/derived/<target>_<variant>/` tree and **diffs** the two shortlists: which compounds drop out, which survive, which newly appear when the protein changes. This is the headline workflow for the precision-oncology framing in `_planning/PROJECT_PROPOSAL.md` section 8.
 - **`99_screen_library.ipynb`** (pending) -- end-to-end runner. Notebooks `00`-`06` chained together with a `mutations=` parameter so a single command produces the consensus shortlist for a wild-type and any number of variant runs.
 
 ### Further reading

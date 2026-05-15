@@ -31,7 +31,7 @@ def build() -> None:
 
 So far we have a receptor 3-D model (notebook `01`) and a library of drug-like, 3-D-embedded ligands (notebook `02`). This notebook brings them together: it **docks** each ligand into the receptor's binding site, scores the resulting poses, runs **PoseBusters** to filter out physically implausible poses, and writes a tidy SDF + score table for the rescoring notebook downstream.
 
-> ⚠️ **gnina is Linux- and GPU-native.** From v1.3 (Oct 2024) the binary is linked against PyTorch + CUDA, so it needs a GPU Colab runtime — the setup cell verifies this before going further. It also runs under WSL2 + CUDA on Windows, or in a Linux+GPU container. **Local Windows and native macOS are unsupported by the docker itself** — run this notebook on Colab if you are on either of those.
+> **Important — gnina is Linux- and GPU-native.** From v1.3 (Oct 2024) the binary is linked against PyTorch + CUDA, so it needs a GPU Colab runtime — the setup cell verifies this before going further. It also runs under WSL2 + CUDA on Windows, or in a Linux+GPU container. **Local Windows and native macOS are unsupported by the docker itself** — run this notebook on Colab if you are on either of those.
 
 ## Learning objectives
 
@@ -108,7 +108,7 @@ These limitations are why we run docking *as one input among several*, not as a 
 """),
 
         markdown("""
-## 1. Setup
+## 1 - Setup
 
 ### What this section does
 
@@ -239,7 +239,7 @@ if not gnina_available():
 """),
 
         markdown("""
-### ⚠ Google Drive authorization — read this before running the next cell
+### Important — Google Drive authorization (read this before running the next cell)
 
 Docked poses + scores are sized in tens of megabytes per run. We default to writing them on Google Drive so they survive Colab runtime restarts (idle timeout, browser close, disconnect). The first time you run the next cell on Colab, you will see a Drive permission dialog — click through to allow.
 
@@ -265,7 +265,7 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 """),
 
         markdown("""
-## 2. Inputs — receptor, ligand library, binding site
+## 2 - Inputs — receptor, ligand library, binding site
 
 ### Background
 
@@ -332,7 +332,7 @@ else:
 # so this notebook is end-to-end runnable on a fresh Colab clone.
 LIGANDS = DATA_ROOT / TARGET / "ligands_prepared.sdf"
 if not LIGANDS.exists():
-    print(f"⚠ {pretty_path(LIGANDS, DATA_ROOT, REPO_ROOT)} not found — preparing a 10-compound")
+    print(f"Warning: {pretty_path(LIGANDS, DATA_ROOT, REPO_ROOT)} not found — preparing a 10-compound")
     print("  fallback inline. For real screens, run notebook 02 first.")
     from aidd.ligands import read_smiles, prepare_library, write_sdf
     smi_path = REPO_ROOT / "data" / "compounds" / TARGET / "training_small.smi"
@@ -375,7 +375,7 @@ print(f"Exhaustiveness:           {EXHAUSTIVENESS}  (poses per compound: {NUM_MO
 """),
 
         markdown("""
-## 3. Redock the reference ligand (methodological sanity check)
+## 3 - Redock the reference ligand (methodological sanity check)
 
 ### Background
 
@@ -442,7 +442,7 @@ The most common failure mode is **flipping**: the docker places the same atoms b
 """),
 
         markdown("""
-## 4. Dock the prepared library
+## 4 - Dock the prepared library
 
 ### Background
 
@@ -549,7 +549,7 @@ Watch out for:
 """),
 
         markdown("""
-## 5. PoseBusters QC — flag physically implausible poses
+## 5 - PoseBusters QC — flag physically implausible poses
 
 ### Background
 
@@ -632,7 +632,7 @@ top1_qc.head(15)
 """),
 
         markdown("""
-## 6. Visualise the top hits
+## 6 - Visualise the top hits
 
 ### Background
 
@@ -680,7 +680,7 @@ view.show()
 """),
 
         markdown("""
-## 7. Save outputs
+## 7 - Save outputs
 
 ### Background
 

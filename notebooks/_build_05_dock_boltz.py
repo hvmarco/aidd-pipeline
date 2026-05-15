@@ -36,7 +36,7 @@ This notebook is the **fast lane** of the pipeline. The previous notebooks built
 
 The two lanes are deliberately uncorrelated. The next notebook (`06_consensus_and_shortlist`) joins their outputs and keeps only the compounds that **both** lanes rank near the top. This *consensus* filter removes compounds whose ranking depends on a single tool — defensible triage before wet-lab follow-up.
 
-> ⚠️ **GPU-mandatory.** Boltz-2 ships a ~5 GB neural-network checkpoint and runs only on CUDA. Open this notebook on a Colab GPU runtime (Runtime → Change runtime type → T4 GPU, or A100 / L4 on Pro / Pro+). The setup cell fails loudly if no GPU is attached.
+> **Important — GPU-mandatory.** Boltz-2 ships a ~5 GB neural-network checkpoint and runs only on CUDA. Open this notebook on a Colab GPU runtime (Runtime → Change runtime type → T4 GPU, or A100 / L4 on Pro / Pro+). The setup cell fails loudly if no GPU is attached.
 
 ## Learning objectives
 
@@ -118,7 +118,7 @@ This is the operational logic behind the consensus shortlist (notebook `06`): ke
 """),
 
         markdown("""
-## 1. Setup
+## 1 - Setup
 
 ### What this section does
 
@@ -282,7 +282,7 @@ if IS_COLAB:
     from aidd.co_folding import BOLTZ2_VERSION  # noqa: E402
 
     if BOLTZ2_VERSION != BOLTZ_VERSION_PIN:
-        print(f"⚠  BOLTZ2_VERSION in aidd.co_folding is {BOLTZ2_VERSION!r}, but the "
+        print(f"Warning: BOLTZ2_VERSION in aidd.co_folding is {BOLTZ2_VERSION!r}, but the "
               f"install above pinned {BOLTZ_VERSION_PIN!r}. Bump one to match the "
               f"other and re-run on a fresh runtime.")
 
@@ -362,7 +362,7 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 """),
 
         markdown("""
-## 2. Warm up Boltz-2 (downloads weights + CCD on first run)
+## 2 - Warm up Boltz-2 (downloads weights + CCD on first run)
 
 ### Background
 
@@ -420,7 +420,7 @@ The numeric values themselves are **meaningless** here — a 5-residue peptide +
 """),
 
         markdown("""
-## 3. Locate (or generate) the protein MSA
+## 3 - Locate (or generate) the protein MSA
 
 ### Background
 
@@ -434,13 +434,13 @@ Boltz-2 accepts a **pre-computed MSA** via the `msa:` field on the protein chain
 
 Probes three locations in priority order. The first hit wins. Non-canonical hits are **copied to the canonical location** so future runs short-circuit at the first probe:
 
-1. **`data/derived/<target>/fold/msa/<target>.a3m`** — the canonical location. ✅ Hit here means "we've located the MSA before; just use it".
+1. **`data/derived/<target>/fold/msa/<target>.a3m`** — the canonical location. Hit here means "we've located the MSA before; just use it".
 2. **`data/derived/<target>/fold/*.a3m`** — notebook 01's default output. ColabFold's `colabfold_batch` writes `<input_stem>.a3m` directly in the output directory, not under a `msa/` subdir. If notebook 01 has run for this target, the file lives here.
 3. **`data/derived/<target>/boltz/per_compound/*/boltz_in_*/out/boltz_results_*/msa/*_unpaired_tmp_env/bfd.mgnify30.metaeuk30.smag30.a3m`** — Boltz's own intermediate MSA from any prior per-compound run on this protein. Reusing this avoids generating a new MSA when one already exists somewhere on Drive. We prefer the deeper BFD/MGnify/MetaEuk/SMAG variant over the UniRef-only one.
 
 If none of the three find anything, the genuine fallback installs **ColabFold** (mirroring notebook 01's pinned commit) and runs `colabfold_batch --msa-only` to generate a fresh MSA. The fresh MSA lands in the canonical `fold/msa/<target>.a3m` location.
 
-> ⚠ The ColabFold-install branch of the fallback is **best-effort**: it does not include a kernel restart, so if ColabFold's deps downgrade numpy / scipy / sklearn (the same risk Section 1's setup cell handles via a kernel restart), subsequent cells may fail with cryptic ABI errors. In practice this branch is rarely needed — the probes above usually find an existing MSA. If you hit this branch and subsequent cells break, run the install in Section 1's setup cell and re-run from cell 1.
+> **Warning:** the ColabFold-install branch of the fallback is **best-effort**: it does not include a kernel restart, so if ColabFold's deps downgrade numpy / scipy / sklearn (the same risk Section 1's setup cell handles via a kernel restart), subsequent cells may fail with cryptic ABI errors. In practice this branch is rarely needed — the probes above usually find an existing MSA. If you hit this branch and subsequent cells break, run the install in Section 1's setup cell and re-run from cell 1.
 
 The MSA file is a few hundred KB to a few MB, lives on Drive, survives across Colab sessions.
 """),
@@ -537,7 +537,7 @@ Three branches you might see:
 """),
 
         markdown("""
-## 4. Inputs — target sequence + the same 414 compounds as notebook 04
+## 4 - Inputs — target sequence + the same 414 compounds as notebook 04
 
 ### Background
 
@@ -611,7 +611,7 @@ for mol in sup:
 ligands_df = pd.DataFrame(records).drop_duplicates(subset="compound_id").reset_index(drop=True)
 missing = docked_ids - set(ligands_df["compound_id"])
 if missing:
-    print(f"⚠ {len(missing)} docked compound_ids not found in the prepared SDF; "
+    print(f"Warning: {len(missing)} docked compound_ids not found in the prepared SDF; "
           f"they will be silently dropped from the Boltz-2 run.")
 
 print(f"Boltz-2 input library: {len(ligands_df):,} (compound_id, smiles) pairs.")
@@ -619,7 +619,7 @@ ligands_df.head()
 """),
 
         markdown("""
-## 5. Smoke-test — measure per-compound runtime on 3 fresh compounds with MSA caching
+## 5 - Smoke-test — measure per-compound runtime on 3 fresh compounds with MSA caching
 
 ### Background
 
@@ -687,7 +687,7 @@ The number to remember from this cell — **steady-state seconds per compound** 
 """),
 
         markdown("""
-## 6. Full library — co-fold all 414 compounds with Boltz-2
+## 6 - Full library — co-fold all 414 compounds with Boltz-2
 
 ### Background
 
@@ -739,7 +739,7 @@ A non-zero `n_failed` is not catastrophic — the consensus shortlist downstream
 """),
 
         markdown("""
-## 7. Sanity check — view one predicted complex in 3-D
+## 7 - Sanity check — view one predicted complex in 3-D
 
 ### Background
 
@@ -787,7 +787,7 @@ Use the 3-D viewer interactively (drag to rotate, scroll to zoom) before moving 
 """),
 
         markdown("""
-## 8. Evaluation — does Boltz-2 affinity rank actives above inactives?
+## 8 - Evaluation — does Boltz-2 affinity rank actives above inactives?
 
 ### Background
 
@@ -846,11 +846,13 @@ joined["boltz_affinity_signed"] = -joined["boltz_affinity"]
 # including those in the test fold. When we filter to test-fold here and
 # compute AUC, we are testing the model on its own training data -- the
 # resulting AUC = 1.000 is a data leak, NOT a real performance number. The
-# honest scaffold AUC for the rescorer (from notebook 04's own held-out
-# evaluation) is 0.66. See _planning/KNOWN_ISSUES.md for the fix scope.
-# Until notebook 04 saves train-fold-only OOF predictions, treat the
-# rescorer row of this table as decorative -- do not compare Boltz-2 against
-# 1.000 in any reporting context.
+# honest scaffold AUC for the rescorer, from notebook 04's 5-fold
+# scaffold-grouped OOF aggregate, is 0.58 (RF), with per-fold AUC spread
+# 0.40-0.69. The honest head-to-head with the OOF column lives in notebook
+# 06 (step-12 closure). This table is preserved as the record of step 11's
+# evaluation as it ran on 2026-05-12 (commit 5b5f96b); treat the rescorer
+# row as the leaked historical reference -- do not compare Boltz-2 against
+# the 1.000 number in any reporting context.
 rows = []
 for split_label, fold_col in [
     ("random stratified", "in_random_test_fold"),
@@ -947,9 +949,9 @@ The Spearman correlation between sign-corrected Boltz-2 affinity and gnina CNN_a
 
 ### About the rescorer's leaked AUC
 
-`scored_poses.parquet` from notebook `04` records `rescorer_rf_proba` as the prediction of a Random Forest trained on the *full* labelled subset (including the test-fold compounds). When this notebook filters to the test fold and computes AUC on that column, the model is being tested on its own training data — the resulting AUC = 1.000 is a **data leak**, not a real performance number. The honest scaffold AUC for the rescorer (from notebook `04`'s own held-out evaluation) is **0.66**.
+`scored_poses.parquet` from notebook `04` records `rescorer_rf_proba` as the prediction of a Random Forest trained on the *full* labelled subset (including the test-fold compounds). When this notebook filters to the test fold and computes AUC on that column, the model is being tested on its own training data — the resulting AUC = 1.000 is a **data leak**, not a real performance number. The honest scaffold AUC for the rescorer, from notebook `04`'s 5-fold scaffold-grouped OOF aggregate, is **0.58** (RF), with per-fold AUC spread **0.40–0.69**. The methodologically-informative number is the spread, not the aggregate alone.
 
-**Do not compare Boltz-2 against the 1.000 number** in any reporting context. The rescorer row of the metrics table above is decorative until notebook `04` is fixed to save train-fold-only OOF predictions in a separate column. See `_planning/KNOWN_ISSUES.md` for the fix scope.
+**Do not compare Boltz-2 against the 1.000 number** in any reporting context. The rescorer row of the metrics table above uses notebook `04`'s `rescorer_rf_proba` column, which is the model trained on all data and therefore leaks into the held-out fold. The table is preserved as the record of step 11's evaluation as it ran on **2026-05-12** (commit `5b5f96b`), not because notebook `04` still needs fixing — the OOF column shipped in commit `d84565c`. The honest head-to-head with the OOF rescorer column is in notebook `06` (the fix landed at step-12 closure). See `_planning/KNOWN_ISSUES.md` for original fix-scope notes.
 
 ### What the numbers cannot tell you
 
@@ -976,7 +978,8 @@ The Boltz-2-specific bits — error-class taxonomy (`boltz_oom`, `boltz_msa_fail
 ### What's next in the pipeline
 
 - **`06_consensus_and_shortlist.ipynb`** — join `affinity.csv` (this notebook) and `scored_poses.parquet` (notebook `04`) on `compound_id`, apply a consensus rule (top-X % by both rankings), emit `shortlist.sdf` + `shortlist.csv` with per-compound poses, scores, ADMET flags. This is where the two-lane pipeline produces its single integrated output.
-- **`07_mutation_analysis.ipynb`** (headline notebook in the §10 research-domain pivot) — run the same screening recipe against a wild-type and a variant sequence (e.g. DPYD\\*2A, KRAS G12C, ESR1 Y537S, BRCA1 LoF), then diff the two consensus shortlists. The per-compound cache + sequence-keyed cache in this notebook is what makes that diff cheap to produce.
+- **`07_variant_effect_prediction.ipynb`** (pending) — per-variant computational priors: AlphaMissense pathogenicity + RaSP ΔΔG stability + gnomAD allele frequency. The canonical source of variant-context columns that the downstream variant-comparison notebooks consume.
+- **`08_mutation_analysis.ipynb`** (headline notebook in the §10 research-domain pivot) — run the same screening recipe against a wild-type and a variant sequence (e.g. DPYD\\*2A, KRAS G12C, ESR1 Y537S, BRCA1 LoF), then diff the two consensus shortlists. The per-compound cache + sequence-keyed cache in this notebook is what makes that diff cheap to produce.
 
 ### Further reading
 

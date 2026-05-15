@@ -36,7 +36,7 @@ When you do not have an experimental 3-D structure of your target — and even w
 
 This notebook takes a protein sequence as input, runs ColabFold on a Colab GPU, picks the best of five predicted models, scores the prediction's confidence, and writes the structure to `data/derived/<target>/fold/`. The output PDB is what the docking notebooks downstream consume.
 
-> ⚠️ **This notebook must run on Google Colab with a GPU.** ColabFold's inference is a deep-learning model with billions of parameters; it is impractical on CPU and the install on Windows / macOS without CUDA is painful. On Colab a typical 360-residue protein takes 30–45 min from "Run All" to a saved PDB. We will not try to run it locally.
+> **Important — this notebook must run on Google Colab with a GPU.** ColabFold's inference is a deep-learning model with billions of parameters; it is impractical on CPU and the install on Windows / macOS without CUDA is painful. On Colab a typical 360-residue protein takes 30–45 min from "Run All" to a saved PDB. We will not try to run it locally.
 
 ## Learning objectives
 
@@ -102,7 +102,7 @@ What AlphaFold2 does **not** do: predict conformational dynamics, protein–liga
 """),
 
         markdown("""
-## 1. Setup
+## 1 - Setup
 
 ### About this install (read once, then forget)
 
@@ -212,7 +212,7 @@ print("imports ok")
 """),
 
         markdown("""
-### ⚠ Google Drive authorization — read this before running the next cell
+### Important — Google Drive authorization (read this before running the next cell)
 
 The folded structure produced by this notebook (~MB-scale per model) is the input for docking (notebook 03) and downstream analysis. We default to writing it on Google Drive so it survives Colab runtime restarts (idle timeout, browser close, disconnect). The first time you run the next cell on Colab, you will see a Drive permission dialog — click through to allow.
 
@@ -238,7 +238,7 @@ print(f"DATA_ROOT: {DATA_ROOT}")
 """),
 
         markdown("""
-## 2. Inputs — target sequence
+## 2 - Inputs — target sequence
 
 ### Background
 
@@ -277,7 +277,7 @@ print(f"Output:    {pretty_path(OUTPUT_DIR, DATA_ROOT, REPO_ROOT)}")
 """),
 
         markdown("""
-## 3. Run ColabFold
+## 3 - Run ColabFold
 
 ### Background
 
@@ -337,7 +337,7 @@ For our ERK2 example we expect rank-1 mean pLDDT ~90 and pTM ~0.85 (kinases are 
 """),
 
         markdown("""
-## 4. Per-residue confidence
+## 4 - Per-residue confidence
 
 ### Background
 
@@ -393,7 +393,7 @@ The dashed horizontal lines mark the AlphaFold confidence bands. Look for:
 """),
 
         markdown("""
-## 5. 3-D viewer — structure coloured by pLDDT
+## 5 - 3-D viewer — structure coloured by pLDDT
 
 ### Background
 
@@ -413,7 +413,7 @@ view.show()
 """),
 
         markdown("""
-## 6. Compare to a reference structure (optional)
+## 6 - Compare to a reference structure (optional)
 
 ### Background
 
@@ -445,7 +445,7 @@ else:
 """),
 
         markdown("""
-## 7. Save the best model for downstream use
+## 7 - Save the best model for downstream use
 
 ### Background
 
