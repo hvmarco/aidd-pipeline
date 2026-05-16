@@ -573,7 +573,7 @@ for genotype, paths in verified.items():
     print(f"\\n{genotype}:")
     for stage, path in paths.items():
         size_kb = path.stat().st_size / 1024
-        print(f"  {stage:>10s}: {pretty_path(path):<70s}  ({size_kb:.1f} KB)")
+        print(f"  {stage:>10s}: {str(pretty_path(path)):<70s}  ({size_kb:.1f} KB)")
 """),
 
         markdown("""
