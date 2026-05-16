@@ -68,6 +68,7 @@ Cells are emitted via shared helpers in `notebooks/_nb_helpers.py`:
 - Use `tqdm` for any loop over ligands/poses.
 - Use `py3Dmol` (not nglview) for in-notebook 3D — works reliably in Colab, VS Code, and JupyterLab without extension dances. Pattern is in `_archive/Week_3_Monday_Docking_and_Scoring.ipynb`.
 - Avoid `nglview` unless the user explicitly asks — the JupyterLab extension setup is painful and doesn't survive Colab.
+- **Colab artefacts must be turn-key, not sketches.** Any cell sequence, probe, verification step, or notebook designed for Natallia to run on Colab must be a complete click-Connect-Run-all artefact: include install + repo clone + Drive mount + all path/variable definitions + the actual work + the print statements that emit results. No assumed prior state ("run nb 07's setup first then paste these cells" is the anti-pattern). Treat every Colab artefact as if a student is running it cold. Full rationale + anti-pattern example in `feedback_turnkey_colab_outputs.md` memory file.
 
 ## Notebook pedagogy (mandatory)
 
@@ -118,6 +119,7 @@ What 99 does *not* do: redefine concepts that the teaching notebooks already cov
 - Single source of truth is `environment.yml` (conda/mamba). A `requirements-colab.txt` exists for the Colab-only path where conda isn't practical — keep the two in sync.
 - Pin loosely (`rdkit>=2024.3`, not `==2024.3.5`) unless we hit a known incompatibility.
 - Don't add a dependency to fix something one stdlib call away.
+- **On Natallia's Windows machine, never call `python` / `py` / `python3` directly from tool-call shells** — they're not on PATH because tool calls don't inherit `conda activate`. Use the full interpreter path `C:\Users\MarcoHernandez\.conda\envs\aidd\python.exe` or `C:\ProgramData\miniconda3\Scripts\conda.exe run -n aidd python ...`. Project env is `aidd`. Full rationale + verification snippets in the `feedback_python_invocation_on_windows.md` memory file.
 
 ## Don't do these without asking
 
