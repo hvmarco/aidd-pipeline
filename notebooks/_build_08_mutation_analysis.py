@@ -330,7 +330,33 @@ The stub-generator cell is **idempotent**: when the stub trees already exist on 
 # ════════════════════════════════════════════════════════════════════════
 USE_STUB_TREES = True
 
-ALPHAFOLD_DPYD_URL = "https://alphafold.ebi.ac.uk/files/AF-Q12882-F1-model_v4.pdb"
+ALPHAFOLD_DB_API = "https://alphafold.ebi.ac.uk/api/prediction/Q12882"
+
+
+def _resolve_dpyd_alphafold_url() -> str:
+    \"\"\"Look up the current AlphaFold-DB PDB URL for UniProt Q12882 (DPYD).
+
+    AlphaFold-DB rolls its model version periodically (v4 in 2022, v6 by mid-2025);
+    hitting the JSON API once returns the current pdbUrl regardless of version, so
+    a hardcoded version-stamped URL does not re-break the stub fixture every time
+    the upstream bumps. The API is unauthenticated and CORS-friendly.
+
+    The resolver assumes the F1 canonical isoform is the first entry in the
+    returned list. Verified for Q12882 (2 entries today, primary is F1); a
+    future agent extending the pattern to other UniProt accessions in step 16
+    or step 17 should re-verify per accession or filter explicitly on the
+    ``isoform`` field rather than blindly indexing ``payload[0]``.
+    \"\"\"
+    with urllib.request.urlopen(ALPHAFOLD_DB_API, timeout=30) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(payload, list) or not payload:
+        raise RuntimeError(f"Unexpected AlphaFold-DB API response: {payload!r}")
+    pdb_url = payload[0].get("pdbUrl")
+    if not pdb_url:
+        raise RuntimeError(
+            f"No pdbUrl in AlphaFold-DB primary entry for Q12882: {payload[0]!r}"
+        )
+    return pdb_url
 
 # Real fluoropyrimidine ligands. SMILES + PubChem CIDs from pubchem.ncbi.nlm.nih.gov.
 DPYD_LIGANDS = [
@@ -352,8 +378,9 @@ DPYD_LIGANDS = [
 
 def _download_dpyd_wt_pdb(out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"  downloading {ALPHAFOLD_DPYD_URL}")
-    urllib.request.urlretrieve(ALPHAFOLD_DPYD_URL, out_path)
+    pdb_url = _resolve_dpyd_alphafold_url()
+    print(f"  downloading {pdb_url}")
+    urllib.request.urlretrieve(pdb_url, out_path)
 
 
 class _IsoleucineSidechainToSerineSelect(Select):
