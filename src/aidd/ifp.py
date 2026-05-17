@@ -10,6 +10,7 @@ removed (per _planning/CONSULTANT_REVIEW.md §6).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Iterable, Union
 
@@ -18,16 +19,53 @@ import prolif as plf
 from rdkit import Chem
 
 PathLike = Union[str, Path]
+logger = logging.getLogger("aidd.ifp")
 
 
 def load_plf_molecule(pdb_path: PathLike) -> plf.Molecule:
     """Read a PDB file and wrap it as a ProLIF Molecule.
 
     Works for both protein receptors and single-pose ligands. For multi-pose
-    docked ligands use mol2 or SDF via ``compute_ifp`` instead.
+    docked ligands use mol2 or SDF via :func:`compute_ifp` instead.
+
+    Defensive fallback: PDBFixer-produced PDBs (e.g. from
+    :func:`aidd.inputs.prep_receptor` + ``PDBFixer.applyMutations``)
+    occasionally have atoms RDKit's strict valence sanitization rejects --
+    typically an over-valent carbon where RDKit's proximity-bonding
+    heuristic infers extra bonds between residues PDBFixer reconstructed.
+    On strict-parse failure we retry with ``sanitize=False`` and
+    re-sanitize without :data:`Chem.SanitizeFlags.SANITIZE_PROPERTIES` (the
+    valence-check flag). ProLIF's IFP detection is predominantly geometric
+    (residue distance shells, H-bond geometry, pi-stacking angles), so the
+    relaxed parse preserves the interactions that matter; atom coordinates
+    are unchanged. The fallback logs a warning so the condition stays
+    visible in notebook output.
     """
     pdb_path = Path(pdb_path)
     mol = Chem.MolFromPDBFile(str(pdb_path), removeHs=False)
+    if mol is None:
+        logger.warning(
+            "load_plf_molecule: strict RDKit parse failed for %s; "
+            "retrying with sanitize=False (ProLIF will see a "
+            "geometrically-correct mol with relaxed bond perception).",
+            pdb_path,
+        )
+        mol = Chem.MolFromPDBFile(str(pdb_path), removeHs=False, sanitize=False)
+        if mol is not None:
+            try:
+                Chem.SanitizeMol(
+                    mol,
+                    sanitizeOps=(
+                        Chem.SanitizeFlags.SANITIZE_ALL
+                        ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "load_plf_molecule: relaxed re-sanitize also raised %r; "
+                    "accepting the unsanitized mol for geometric IFP.",
+                    exc,
+                )
     if mol is None:
         raise ValueError(f"RDKit could not parse {pdb_path}")
     return plf.Molecule(mol)

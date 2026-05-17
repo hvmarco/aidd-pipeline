@@ -4,7 +4,33 @@ Issues caught while closing a step that don't block the step itself but require 
 
 ## Open
 
-*(none)*
+### nb 09 stub IFP uses relaxed RDKit parse -- strict fix decision deferred to step 17 nb 99 design
+
+**Surfaced:** 2026-05-17, during nb 09 Colab T4 run for step 16 closure.
+**Status:** Open. Mitigation shipped (this turn); permanent fix is a step-17 Q-decision.
+
+**Bug.** PDBFixer-produced PDBs (from `aidd.inputs.prep_receptor` + `PDBFixer.applyMutations`) occasionally have atoms RDKit's strict valence sanitization rejects -- typically an over-valent carbon where RDKit's proximity-bonding heuristic infers extra bonds between residues PDBFixer reconstructed. `Chem.MolFromPDBFile` returns `None`; `aidd.ifp.load_plf_molecule` raises. Hit on the very first Colab run of nb 09's §5 NAT2 walkthrough (NAT2 WT PDB 2PFR, post-`prep_receptor` cleanup; specifically `"Explicit valence for atom # 65 C, 5, is greater than permitted"`).
+
+nb 08's stub PDB came from a BioPython-only sidechain surgery on an AlphaFold model -- different PDB pedigree, different bond-perception outcome, no failure. nb 09's stub uses the production `prep_receptor + PDBFixer.applyMutations` path (the same one nb 99 will use in step 17), which is the path that surfaces this.
+
+**Mitigation (this turn).** `src/aidd/ifp.py:load_plf_molecule` now has a defensive two-step: strict parse first (unchanged behavior; nb 08 still takes the fast path); on `None`, retry with `sanitize=False` and re-sanitize without `Chem.SanitizeFlags.SANITIZE_PROPERTIES` (the valence-check flag). ProLIF receives a geometrically-correct mol with relaxed bond perception. Logs a warning when the fallback fires. Backward compatible.
+
+**Honest trade-off.** The relaxed parse preserves geometric IFP categories (residue distance shells, H-bond geometry, hydrophobic contacts -- all rely on Cα / heavy-atom coordinates, which are unchanged) but bond-order-dependent categories may misclassify:
+
+- Aromatic stacking detection depends on aromaticity perception, which depends on bond orders.
+- Formal-charge-dependent HBDonor / HBAcceptor classification depends on valences.
+
+For step-16 stub fixtures this is acceptable -- methodology verification, not real binding fidelity. For step-17 nb 99 production runs the strict fix becomes a methodological question.
+
+**Strict-fix candidates for step-17 nb 99 Q-decision.** Three paths:
+
+- **(A) Filter offending atoms post-PDBFixer.** Detect over-valent atoms in the prepped PDB and drop them before RDKit parse. Preserves most of PDBFixer's geometric output but drops information; aromatic-stacking IFP categories may still misclassify on remaining atoms whose perceived bond orders depend on the dropped atoms' neighbours.
+- **(B) OpenBabel pre-sanitize.** Pipe PDBFixer output through `obabel -ipdb -opdb` (or `pybel.readfile`); OpenBabel re-perceives bonds via a different heuristic before RDKit parse. Replaces one heuristic with another -- same class of problem from a different angle. Cheap to try, modest dependency add.
+- **(C) `OpenMM Modeller.addHydrogens` after PDBFixer + re-parse.** Heaviest but most methodologically correct: explicit hydrogens force consistent valence per the OpenMM force-field model. Most likely to produce a strict-parseable PDB, at the cost of an extra OpenMM step in the call chain and slightly larger PDBs.
+
+**Fix scope.** Pick one of (A) / (B) / (C) as part of nb 99's IFP-fidelity design pass. Compare gained / lost IFP entries against the stub-mode relaxed-parse baseline to quantify the difference. Update `load_plf_molecule` if the strict fix lands at the IFP-reader layer, or `prep_receptor` if it lands at the PDB-prep layer.
+
+**Priority.** Background. Does not block step-16 closure; becomes load-bearing when nb 99's production-mode IFP fidelity becomes a published number. Q-decision belongs in the step-17 implementation chat.
 
 ---
 
