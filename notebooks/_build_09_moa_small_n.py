@@ -294,6 +294,8 @@ DEMOS = [
                                 "CC/C(=C(\\\\C1=CC=CC=C1)/C2=CC=C(C=C2)OCCN(C)C)/C3=CC=CC=C3"},
         "anchor_residue_hint": 308,    # CYP2D6 active-site I-helix anchor
         "variants": [
+            {"label": "WT",  "handling": "wt",
+             "position": None, "wt_aa": None, "mut_aa": None, "rsid": None},
             {"label": "*4",  "handling": "out_of_scope_splice",
              "position": None, "wt_aa": None, "mut_aa": None, "rsid": "rs3892097",
              "out_of_scope_reason":
@@ -370,6 +372,8 @@ DEMOS = [
                                 "C5=C(C=CN=C5C(C)C)C)C(=O)C=C"},
         "anchor_residue_hint": 12,
         "variants": [
+            {"label": "WT",   "handling": "wt",
+             "position": None, "wt_aa": None, "mut_aa": None, "rsid": None},
             {"label": "G12C", "handling": "mutate_in_place",
              "position": 12,  "wt_aa": "G", "mut_aa": "C", "rsid": "rs121913530"},
         ],
@@ -825,15 +829,17 @@ def _build_record(target: str, demo: dict, variant: dict, compound_name: str, sm
 nat2_records: list[dict] = []
 for variant in nat2_demo["variants"]:
     label = variant["label"]
-    if variant["handling"] == "wt":
-        fixture = FIXTURES[("NAT2", "WT")]
+    handling = variant["handling"]
+    if handling == "wt":
         record = _build_record("NAT2", nat2_demo, variant, nat2_compound, nat2_smiles,
-                               fixture=fixture)
-    else:
+                               fixture=wt_fixture)
+    elif handling == "mutate_in_place":
         fixture = FIXTURES[("NAT2", label)]
         record = _build_record("NAT2", nat2_demo, variant, nat2_compound, nat2_smiles,
                                fixture=fixture,
                                ifp_wt_for_diff=ifp_wt, wt_pdb_for_diff=wt_pdb)
+    else:  # out_of_scope_* -- not exercised for NAT2 in step 16; defensive branch.
+        record = _build_record("NAT2", nat2_demo, variant, nat2_compound, nat2_smiles)
     # Render HTML.
     safe_label = label.replace("*", "").lower() or "wt"
     html_path = MOA_REPORTS_ROOT / "nat2" / f"nat2_{safe_label}_isoniazid.html"
@@ -897,13 +903,17 @@ ifp_wt_cyp = compute_ifp(cyp_wt_fixture["pdb_path"], cyp_wt_fixture["pose_sdf_pa
 cyp_records: list[dict] = []
 for variant in cyp_demo["variants"]:
     label = variant["label"]
-    if variant["handling"] == "mutate_in_place":
+    handling = variant["handling"]
+    if handling == "wt":
+        record = _build_record("CYP2D6", cyp_demo, variant, cyp_compound, cyp_smiles,
+                               fixture=cyp_wt_fixture)
+    elif handling == "mutate_in_place":
         fixture = FIXTURES[("CYP2D6", label)]
         record = _build_record("CYP2D6", cyp_demo, variant, cyp_compound, cyp_smiles,
                                fixture=fixture,
                                ifp_wt_for_diff=ifp_wt_cyp,
                                wt_pdb_for_diff=cyp_wt_fixture["pdb_path"])
-    else:  # out_of_scope_splice
+    else:  # out_of_scope_*
         record = _build_record("CYP2D6", cyp_demo, variant, cyp_compound, cyp_smiles)
     safe_label = label.replace("*", "").lower() or "wt"
     html_path = MOA_REPORTS_ROOT / "cyp2d6" / f"cyp2d6_{safe_label}_tamoxifen.html"
@@ -985,11 +995,18 @@ ifp_wt_kras = compute_ifp(kras_wt_fixture["pdb_path"], kras_wt_fixture["pose_sdf
 kras_records: list[dict] = []
 for variant in kras_demo["variants"]:
     label = variant["label"]
-    fixture = FIXTURES[("KRAS", label)]
-    record = _build_record("KRAS", kras_demo, variant, kras_compound, kras_smiles,
-                           fixture=fixture,
-                           ifp_wt_for_diff=ifp_wt_kras,
-                           wt_pdb_for_diff=kras_wt_fixture["pdb_path"])
+    handling = variant["handling"]
+    if handling == "wt":
+        record = _build_record("KRAS", kras_demo, variant, kras_compound, kras_smiles,
+                               fixture=kras_wt_fixture)
+    elif handling == "mutate_in_place":
+        fixture = FIXTURES[("KRAS", label)]
+        record = _build_record("KRAS", kras_demo, variant, kras_compound, kras_smiles,
+                               fixture=fixture,
+                               ifp_wt_for_diff=ifp_wt_kras,
+                               wt_pdb_for_diff=kras_wt_fixture["pdb_path"])
+    else:  # out_of_scope_* -- not exercised for KRAS in step 16; defensive branch.
+        record = _build_record("KRAS", kras_demo, variant, kras_compound, kras_smiles)
     safe_label = label.replace("*", "").lower() or "wt"
     html_path = MOA_REPORTS_ROOT / "kras" / f"kras_{safe_label}_sotorasib.html"
     render_moa_html(record, html_path)
@@ -1010,7 +1027,9 @@ for variant in kras_demo["variants"]:
 
 ### What this section does
 
-Concatenate all 9 per-(compound x variant) records (4 NAT2 + 2 CYP2D6 + 1 DPYD + 1 UGT1A1 + 1 KRAS) into a single DataFrame; emit `summary.csv` at `data/derived/moa_reports/summary.csv`. The column set covers compound identity, variant identity, scores (when in-scope), nb 07 priors, structural / IFP diff summary numbers, and the path to the per-(compound x variant) HTML report.
+Concatenate all 11 per-(compound x variant) records (4 NAT2 + 3 CYP2D6 + 1 DPYD + 1 UGT1A1 + 2 KRAS) into a single DataFrame; emit `summary.csv` at `data/derived/moa_reports/summary.csv`. The column set covers compound identity, variant identity, scores (when in-scope), nb 07 priors, structural / IFP diff summary numbers, and the path to the per-(compound x variant) HTML report.
+
+For the two missense-comparison demos (CYP2D6 and KRAS) the WT row is the baseline-binding-mode reference: same compound, same pipeline, no variant change. The variant row's diff section reads against this WT baseline. The four out-of-scope variants (CYP2D6 \\*4, DPYD \\*2A, UGT1A1 \\*28) have empty score / structural / IFP columns since the structural pipeline does not apply.
 """),
 
         code(title="Emit summary CSV across all demos", source="""
@@ -1068,7 +1087,7 @@ summary_df[["target_name", "variant_label", "variant_handling", "compound_name",
 
 ### What landed in this notebook
 
-- 9 per-(compound x variant) HTML reports under `data/derived/moa_reports/<target>/<target>_<variant>_<compound>.html`.
+- 11 per-(compound x variant) HTML reports under `data/derived/moa_reports/<target>/<target>_<variant>_<compound>.html` (4 NAT2 + 3 CYP2D6 + 1 DPYD + 1 UGT1A1 + 2 KRAS).
 - 1 combined summary CSV at `data/derived/moa_reports/summary.csv`.
 - 6 PDB stub trees (NAT2 WT + 3 variants, CYP2D6 WT + \\*10, KRAS WT + G12C) for the structural-pipeline branches.
 - 0 GPU calls. Real Boltz-2 / gnina single-compound predictions are nb 99 production territory (step 17).
@@ -1083,7 +1102,7 @@ NB-09 STEP-16 SUMMARY BLOCK (copy-paste into step-closing commit body)
 ======================================================================
 \"\"\")
 
-print(f"5 demos, 9 (compound x variant) reports, 1 summary CSV.")
+print(f"5 demos, 11 (compound x variant) reports, 1 summary CSV.")
 print()
 print("Deep walkthrough -- NAT2 *5/*6/*7 + isoniazid (UniProt P11245):")
 for record in nat2_records:
