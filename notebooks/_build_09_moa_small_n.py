@@ -358,7 +358,12 @@ DEMOS = [
     {
         "target_name":         "KRAS",
         "uniprot":             "P01116",
-        "pdb_id":              "6OIM",
+        # WT K-RAS + GDP. Do NOT use 6OIM here -- 6OIM is the famous sotorasib+G12C
+        # co-crystal, i.e. the VARIANT complex (residue 12 in 6OIM is already CYS),
+        # so PDBFixer's applyMutations(\"GLY-12-CYS\") raises a residue-name mismatch.
+        # 4OBE is the canonical WT reference; G12C is produced from it via the same
+        # applyMutations call the other missense demos use.
+        "pdb_id":              "4OBE",
         "compound":            {"name": "sotorasib",
                                 "smiles_fallback":
                                 "C[C@H]1CN(CCN1C2=NC(=O)N(C3=NC(=C(C=C32)F)C4=C(C=CC=C4F)O)"
