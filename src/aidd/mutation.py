@@ -16,7 +16,12 @@ three callers.
   classification + per-compound rank deltas between two consensus
   shortlists.
 - :func:`render_mutation_html`   - self-contained HTML report with embedded
-  py3Dmol viewer.
+  py3Dmol viewer (library-side WT-vs-variant comparison from nb 08).
+- :func:`render_moa_html`        - self-contained HTML report for the
+  per-(compound x variant) small-N MoA layout (nb 09). Sibling renderer
+  to :func:`render_mutation_html` with a different section layout
+  (no shortlist diff at N=1; out-of-scope splice / promoter branch
+  produces a priors-only report).
 - :func:`summarise_mutation`     - top-level aggregator: pulls nb 07 priors
   + structural + IFP + shortlist diffs into one dict ready for HTML
   rendering.
@@ -403,11 +408,263 @@ def summarise_mutation(target: str, variant: str, uniprot: str, position: int,
     }
 
 
+def render_moa_html(record: dict, out_path: Path) -> Path:
+    """Per-(compound x variant) HTML report for notebook 09 (small-N MoA).
+
+    Sections mirror ``MECHANISM_OF_ACTION_SCOPE.md`` "Output format" /
+    "Per-compound HTML report":
+
+    1. Header (compound name + SMILES + target + variant identifier).
+    2. 3D pose viewer (embedded py3Dmol HTML supplied by the caller).
+    3. Scores + priors table (single-row; nb 07 priors when available).
+    4. Key interactions (ProLIF (residue, interaction-type) list for the
+       pose).
+    5. WT vs variant diff (only when ``record["structural"]`` is present;
+       absent for WT records and out-of-scope branches).
+    6. Bottom-line caveat (always).
+
+    For out-of-scope branches (splice / promoter variants the structural
+    pipeline cannot model) sections 2 / 4 / 5 are replaced with a
+    "structural consequence cannot be modelled" block; sections 1 / 3 / 6
+    still render (priors from nb 07 work for splice / promoter variants
+    at the gene level even when the protein-structural diff doesn't).
+
+    Parameters
+    ----------
+    record
+        Per-(compound x variant) record. Required keys: ``target_name``,
+        ``uniprot``, ``variant_label``, ``variant_handling``,
+        ``compound_name``, ``smiles``, ``priors``. Optional keys
+        (presence triggers the corresponding section): ``scores``,
+        ``ifp_per_residue``, ``structural``, ``ifp_diff``,
+        ``viewer_html``, ``out_of_scope_reason``.
+    out_path
+        Output path for the standalone HTML file. Parent directories are
+        created if missing.
+
+    Returns
+    -------
+    Path
+        The written HTML file.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    target          = record["target_name"]
+    uniprot         = record["uniprot"]
+    variant         = record["variant_label"]
+    handling        = record.get("variant_handling", "unknown")
+    compound        = record["compound_name"]
+    smiles          = record.get("smiles", "") or ""
+
+    is_wt           = variant.strip().upper() == "WT"
+    is_out_of_scope = handling.startswith("out_of_scope_")
+
+    if is_wt:
+        title = f"{compound} bound to {target} (UniProt {uniprot}, WT baseline)"
+    else:
+        title = f"{compound} bound to {target} {variant} (UniProt {uniprot})"
+
+    # --- Section 3: scores + priors table ---------------------------------
+    scores = record.get("scores", {}) or {}
+    priors = record.get("priors", {}) or {}
+    am = priors.get("alphamissense", {}) or {}
+    gn = priors.get("gnomad", {}) or {}
+    rp = priors.get("rasp", {}) or {}
+
+    def _fmt(v) -> str:
+        if v is None:
+            return "-"
+        if isinstance(v, bool):
+            return str(v)
+        if isinstance(v, float):
+            return f"{v:.3f}"
+        return str(v)
+
+    rasp_note = (
+        "positive = destabilising"
+        if rp.get("ddg") is not None
+        else "not covered by RaSP cache (see nb 07)"
+    )
+    score_rows = [
+        ("Boltz-2 affinity (log10 IC50 uM; lower=stronger)",
+         scores.get("boltz_affinity"),
+         "negative = predicted binder"),
+        ("Boltz-2 binder probability",
+         scores.get("boltz_affinity_probability"),
+         "0-1; higher = more likely to bind"),
+        ("gnina CNN-affinity",
+         scores.get("gnina_cnn_affinity"),
+         "higher = stronger predicted binding"),
+        ("PoseBusters pass",
+         scores.get("posebusters_pass"),
+         "geometry sanity gate"),
+        ("AlphaMissense pathogenicity (nb 07)",
+         am.get("score"),
+         (am.get("class") or "-")),
+        ("gnomAD allele frequency overall (nb 07)",
+         gn.get("allele_freq_overall"),
+         f"found: {gn.get('found', '-')}, flipped: {gn.get('reference_flipped', '-')}"),
+        ("RaSP DDG (kcal/mol; nb 07)",
+         rp.get("ddg"),
+         rasp_note),
+    ]
+    scores_html = (
+        '<table class="aidd-table">'
+        '<thead><tr><th>Metric</th><th>Value</th><th>Note</th></tr></thead>'
+        '<tbody>'
+        + ''.join(
+            f"<tr><td>{label}</td><td>{_fmt(value)}</td><td>{note}</td></tr>"
+            for label, value, note in score_rows
+        )
+        + '</tbody></table>'
+    )
+
+    # --- Out-of-scope branch ---------------------------------------------
+    if is_out_of_scope:
+        reason = (
+            record.get("out_of_scope_reason")
+            or "This variant class cannot be modelled by the structural pipeline."
+        )
+        body = f"""
+        <h2>1. Compound + variant</h2>
+        <p><b>Target:</b> {target} (UniProt {uniprot})</p>
+        <p><b>Variant:</b> {variant} (handling: {handling})</p>
+        <p><b>Compound:</b> {compound}</p>
+        <p><b>SMILES:</b> <code>{smiles}</code></p>
+
+        <h2>2. Structural modelling: out of scope</h2>
+        <div class="oos">{reason}</div>
+
+        <h2>3. Scores + nb 07 priors</h2>
+        {scores_html}
+        """
+    else:
+        viewer_html = record.get("viewer_html") or "<p><i>(3D viewer not embedded.)</i></p>"
+
+        ifp_pose = record.get("ifp_per_residue") or []
+        if ifp_pose:
+            interaction_rows = ''.join(
+                f"<tr><td>{res}</td><td>{itype}</td></tr>"
+                for res, itype in sorted(ifp_pose)
+            )
+            interactions_html = (
+                '<table class="aidd-table">'
+                '<thead><tr><th>Residue</th><th>Interaction type</th></tr></thead>'
+                f'<tbody>{interaction_rows}</tbody></table>'
+            )
+        else:
+            interactions_html = "<p><i>(No interactions detected for this pose.)</i></p>"
+
+        diff_html = ""
+        structural = record.get("structural")
+        if not is_wt and structural:
+            diff_html += f"""
+            <h2>5. WT vs variant diff</h2>
+            <h3>Structural</h3>
+            <table class="aidd-table">
+              <thead><tr><th>Metric</th><th>Value (A)</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td>Pocket-restricted Ca-RMSD ({structural.get('radius_a', 8.0)} A shell)</td>
+                    <td>{_fmt(structural.get('rmsd_pocket_A'))}</td>
+                    <td>{structural.get('n_matched', 0)} matched residues</td></tr>
+                <tr><td>Full-protein Ca-RMSD</td>
+                    <td>{_fmt(structural.get('rmsd_full_A'))}</td>
+                    <td>Ca atoms matched by residue number</td></tr>
+              </tbody>
+            </table>"""
+        ifp_diff_record = record.get("ifp_diff")
+        if not is_wt and ifp_diff_record:
+            gained_n = len(ifp_diff_record.get("gained", []))
+            lost_n   = len(ifp_diff_record.get("lost",   []))
+            pres_n   = len(ifp_diff_record.get("preserved", []))
+            def _ex(pairs, n=5):
+                return (', '.join(str(t) for t in pairs[:n]) +
+                        ('...' if len(pairs) > n else ''))
+            diff_html += f"""
+            <h3>Interaction-fingerprint diff (WT vs {variant})</h3>
+            <table class="aidd-table">
+              <thead><tr><th>Category</th><th>n</th><th>Examples</th></tr></thead>
+              <tbody>
+                <tr><td>Gained (variant only)</td><td>{gained_n}</td>
+                    <td>{_ex(ifp_diff_record.get('gained', []))}</td></tr>
+                <tr><td>Lost (WT only)</td><td>{lost_n}</td>
+                    <td>{_ex(ifp_diff_record.get('lost', []))}</td></tr>
+                <tr><td>Preserved</td><td>{pres_n}</td>
+                    <td>{_ex(ifp_diff_record.get('preserved', []))}</td></tr>
+              </tbody>
+            </table>"""
+
+        body = f"""
+        <h2>1. Compound + variant</h2>
+        <p><b>Target:</b> {target} (UniProt {uniprot})</p>
+        <p><b>Variant:</b> {variant} (handling: {handling})</p>
+        <p><b>Compound:</b> {compound}</p>
+        <p><b>SMILES:</b> <code>{smiles}</code></p>
+
+        <h2>2. 3-D pose viewer</h2>
+        {viewer_html}
+
+        <h2>3. Scores + nb 07 priors</h2>
+        {scores_html}
+
+        <h2>4. Key interactions (this pose)</h2>
+        {interactions_html}
+
+        {diff_html}
+        """
+
+    caveat_html = """
+    <div class="caveat">
+    <b>Computational hypothesis-generation only.</b> Numbers above describe predicted
+    binding-site fit and structural change; they do not predict catalytic rate (k_cat, K_m)
+    for enzymes, nor patient-level clinical outcome. Wet-lab validation is required before
+    any clinical inference. For pharmacogene enzymes (DPYD, NAT2, CYP2D6, UGT1A1), RaSP
+    DDG captures one mechanism contributing to reduced metabolism (protein-stability-driven
+    abundance loss); catalysis rate per se needs QM/MM-class methods (out of scope; see
+    notebook 09 recap for pointers).
+    </div>
+    """
+
+    css = """
+      body { font-family: -apple-system, system-ui, sans-serif; max-width: 1100px;
+             margin: 24px auto; padding: 0 16px; color: #222; }
+      h1 { font-size: 1.5em; margin-bottom: 4px; }
+      h2 { font-size: 1.15em; margin-top: 28px; border-bottom: 1px solid #ddd;
+           padding-bottom: 4px; }
+      h3 { font-size: 1.0em; margin-top: 18px; }
+      code { background: #f6f6f8; padding: 1px 6px; border-radius: 3px; }
+      .aidd-table { border-collapse: collapse; margin: 8px 0; }
+      .aidd-table th, .aidd-table td { padding: 6px 12px; border: 1px solid #ddd;
+                                       text-align: left; }
+      .aidd-table thead { background: #f4f4f6; }
+      .caveat { background: #fff8dc; padding: 10px 14px; border-left: 4px solid #d4a017;
+                margin-top: 28px; font-size: 0.95em; }
+      .oos { background: #f0f4ff; padding: 10px 14px; border-left: 4px solid #4060a8;
+             margin-top: 8px; font-size: 0.95em; }
+    """
+
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<style>{css}</style></head>
+<body>
+<h1>{title}</h1>
+<p><i>Generated by aidd-pipeline notebook 09 (small-N mechanism of action).</i></p>
+
+{body}
+
+{caveat_html}
+</body></html>"""
+    out_path.write_text(html, encoding="utf-8")
+    return out_path
+
+
 __all__ = [
     "pocket_residues_within",
     "ca_rmsd_pocket",
     "ifp_diff",
     "shortlist_diff",
     "render_mutation_html",
+    "render_moa_html",
     "summarise_mutation",
 ]
