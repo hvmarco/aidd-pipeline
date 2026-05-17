@@ -230,11 +230,21 @@ The pipeline is **target-agnostic by design**, so the same notebooks (01–06) a
 
 ## 9. Notebook 99 — optional AlphaFold 3 fold provider toggle
 
+*Reframed 2026-05-17 following step-17 pre-implementation reading pass: the original API-client design assumed a public AF3 programmatic submission API that does not exist. See "Constraint as of 2026-05" below.*
+
 ### Background
 
 Notebook 01 (`fold_target`) uses **AlphaFold 2 via ColabFold** for structure prediction. AF2 weights are open (CC-BY-4.0), so anyone — student, colleague, reviewer — can run the notebook and reproduce the fold. This is the right default for an open-science pipeline and is **not changing**.
 
-In parallel, the project owner (Natallia, with academic access via her university) may want to use **AlphaFold 3 via the AlphaFold Server API** for her own runs — e.g. for grant materials where citing the newest tool is useful, or for spot-checking specific results against AF3's co-folding head. AF3's weights are **academic non-commercial only, per-user application, no redistribution**, so AF3 cannot be the default for the pipeline. It can however be an opt-in path that the notebook owner enables when they want.
+In parallel, the project owner (Natallia, with academic access via her university) may want to use **AlphaFold 3** for her own runs — e.g. for grant materials where citing the newest tool is useful, or for spot-checking specific results against AF3's co-folding head. AF3's weights are **academic non-commercial only, per-user application, no redistribution**, so AF3 cannot be the default for the pipeline. It can however be an opt-in path that the notebook owner enables when they want.
+
+### Constraint as of 2026-05 — no public AF3 programmatic submission API
+
+AlphaFold Server ([alphafoldserver.com](https://alphafoldserver.com)) has **no public programmatic submission API** as of 2026-05. The web UI accepts visual-form input or a "Upload JSON" button for headless job specification, but submission itself is web-UI-only — no REST endpoint, no API key system, no polling endpoint for headless execution. Daily quota is ~30 jobs per user, rate-limited at the UI layer. (Confirmed via EBI AlphaFold training docs and google-deepmind/alphafold#944.)
+
+For programmatic AF3 access, the community routes are: run the open-source `alphafold3` model locally with weights obtained by per-user academic application (Google distributes weights under an agreement; self-host on GPU), or use a paid third-party hosted re-implementation (e.g., Protenix via Neurosnap). Neither fits a Colab-first open-science notebook's design.
+
+The honest compromise: the operator submits the fold via the alphafoldserver.com web UI under their per-user academic agreement, downloads the result zip, and points the pipeline at it. Step-17 implements this as a **parser-only helper**; if AF3 ever ships a public programmatic API, the helper can be extended (see "Forward-compat note" below).
 
 ### Design — single notebook, one toggle
 
@@ -242,7 +252,7 @@ In parallel, the project owner (Natallia, with academic access via her universit
 
 ```python
 FOLD_PROVIDER = "colabfold"   # default: AF2 via ColabFold. Open weights, reproducible by anyone.
-# FOLD_PROVIDER = "af3_server" # personal-use only: AlphaFold Server API. Needs GOOGLE_AF3_API_KEY in Colab Secrets.
+# FOLD_PROVIDER = "af3_server" # operator-only: AF3 via web UI; result zip supplied via AF3_RESULT_ZIP path.
 ```
 
 The folding cell dispatches on `FOLD_PROVIDER`. Both branches produce the same canonical PDB at `data/derived/<target>/fold/<target>_best.pdb`; downstream cells (docking, scoring, consensus) don't know which folder was used.
@@ -251,32 +261,35 @@ The folding cell dispatches on `FOLD_PROVIDER`. Both branches produce the same c
 
 ### Spec for the agent who builds this
 
-1. **In `src/aidd/folding.py`** — add a new function alongside the existing ColabFold parser:
-   - `fold_with_af3_server(sequence: str, output_dir: PathLike, *, api_key: str, target_name: str = "target") -> Path`
-   - Authenticates against [alphafoldserver.com](https://alphafoldserver.com)'s academic API.
-   - Submits a fold job (sequence-only; protein-only mode), polls for completion, downloads the result.
-   - Writes the canonical `<target_name>_best.pdb` to `output_dir`. Returns the path.
-   - ~50 lines; only new dependency is `requests` (already transitive via existing packages).
+1. **In `src/aidd/folding.py`** — add a new parser function alongside the existing ColabFold parser (landed at step-17 commit 1/N):
+   - `fold_with_af3_server(af3_result_zip: PathLike, output_dir: PathLike, *, target_name: str = "target") -> Path`
+   - **Not an API client.** The operator submits the fold via [alphafoldserver.com](https://alphafoldserver.com)'s web UI under their per-user academic agreement and downloads the result zip.
+   - The helper unzips, picks the rank-1 model (prefers `*_model_0.cif`; falls back to lexically-first `.cif` with a logged warning so layout drift surfaces visibly), parses via Biopython's `MMCIFParser`, and writes the canonical `<target_name>_best.pdb` to `output_dir`. Returns the path.
+   - Cross-platform stdlib `zipfile` + Biopython (already in env). No network, no auth, no GPU. Lazy Biopython import matches `prep_receptor`'s pattern in `src/aidd/inputs.py`.
+   - ~150 lines including defensive validation, descriptive `raise` messages, and the rank-1 fallback.
 
 2. **In `notebooks/_build_99_screen_library.py`** — the folding cell does:
    - If `FOLD_PROVIDER == "colabfold"`: existing ColabFold path (delegated to notebook 01's logic via the package).
    - If `FOLD_PROVIDER == "af3_server"`:
-     - Read `GOOGLE_AF3_API_KEY` from `google.colab.userdata`.
-     - If missing → raise with a clear message ("Set GOOGLE_AF3_API_KEY in Colab Secrets. See https://alphafoldserver.com for academic access.").
-     - Call `fold_with_af3_server(sequence, output_dir, api_key=...)`.
-     - Never print the API key.
+     - Read `AF3_RESULT_ZIP` (an operator-set path to the downloaded zip — typically on Drive at `data/manual_folds/<target>_af3.zip`).
+     - If missing → raise with a clear message: *"Submit the fold via https://alphafoldserver.com under your academic agreement, download the result zip, and set `AF3_RESULT_ZIP` to its path."*
+     - Call `fold_with_af3_server(af3_result_zip, output_dir, target_name=...)`.
 
-3. **One markdown cell** in 99 explaining: the toggle, why the default is open, how the owner sets up the AF3 path (link to AF3 Server academic application, Colab Secrets walk-through), and an explicit caveat that anything pushed to the repo with AF3 results must include the methods citation.
+3. **One markdown cell** in 99 explaining: the toggle, why the default is open, how the owner sets up the AF3 path (link to AF3 Server academic application, web-UI submission walk-through, where to drop the result zip), and an explicit caveat that anything pushed to the repo with AF3 results must include the methods citation.
 
 4. **No copies of AF3 weights or output** in `data/derived/` ever get committed. AF3 outputs are personal data; the `.gitignore` on `data/derived/` already prevents this.
 
+### Forward-compat note
+
+If AF3 ever ships a public programmatic submission API, `fold_with_af3_server`'s signature can extend to support both modes: the existing parser path stays for users who prefer manual web-UI control; a new `submit_via_api=True` flag plus `api_key` kwarg adds the headless path. The on-disk contract (canonical PDB at the expected location) remains unchanged, so notebook 99's downstream cells stay agnostic to which mode was used.
+
 ### Effort estimate
 
-1–2 days when the work lands, in line with similar feature additions. Most of the work is the API wrapper + secret handling + testing both branches on Colab. No refactor of the existing pipeline.
+~0.5 day for the parser helper + secret-handling-free notebook integration. The earlier estimate (1–2 days for API client + auth + polling + retry) was based on the API-client design that turned out not to be implementable; the parser-only design is substantially smaller.
 
 ### When this lands
 
-After notebook 99's first build (which uses only `FOLD_PROVIDER="colabfold"`). The AF3 path is an additive feature, not a prerequisite for shipping 99.
+The parser helper landed at step-17 commit 1/N (`src/aidd/folding.py`, the `fold_with_af3_server` function). The notebook integration lands as part of step 17's main builder commit (`_build_99_screen_library.py`). The AF3 path is an additive feature, not a prerequisite for shipping 99 in its default `FOLD_PROVIDER="colabfold"` mode.
 
 ## 10. Research-domain focus: pharmacogenomics + variant-function in common solid tumours
 

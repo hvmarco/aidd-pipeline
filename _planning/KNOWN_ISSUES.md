@@ -28,9 +28,9 @@ For step-16 stub fixtures this is acceptable -- methodology verification, not re
 - **(B) OpenBabel pre-sanitize.** Pipe PDBFixer output through `obabel -ipdb -opdb` (or `pybel.readfile`); OpenBabel re-perceives bonds via a different heuristic before RDKit parse. Replaces one heuristic with another -- same class of problem from a different angle. Cheap to try, modest dependency add.
 - **(C) `OpenMM Modeller.addHydrogens` after PDBFixer + re-parse.** Heaviest but most methodologically correct: explicit hydrogens force consistent valence per the OpenMM force-field model. Most likely to produce a strict-parseable PDB, at the cost of an extra OpenMM step in the call chain and slightly larger PDBs.
 
-**Fix scope.** Pick one of (A) / (B) / (C) as part of nb 99's IFP-fidelity design pass. Compare gained / lost IFP entries against the stub-mode relaxed-parse baseline to quantify the difference. Update `load_plf_molecule` if the strict fix lands at the IFP-reader layer, or `prep_receptor` if it lands at the PDB-prep layer.
+**Fix scope.** Pick one of (A) / (B) / (C) **deferred to step 18** once nb 99's first production runs reveal whether the aromatic-stacking miscount is empirically material on real PDBs (rather than synthetic stubs). Step-17 ships nb 99 with the existing relaxed-parse fallback; the executive-summary recap documents the IFP-fidelity caveat. Measurement criterion for step 18: how often does the strict-parse fallback fire across the headline-demo target set's first production-mode runs, and how many IFP entries differ between the relaxed-parse output and a candidate strict-fix output on the same input. Update `load_plf_molecule` if the strict fix lands at the IFP-reader layer, or `prep_receptor` if it lands at the PDB-prep layer.
 
-**Priority.** Background. Does not block step-16 closure; becomes load-bearing when nb 99's production-mode IFP fidelity becomes a published number. Q-decision belongs in the step-17 implementation chat.
+**Priority.** Background. Does not block step-16 closure; nb 99 ships at step 17 with the relaxed-parse fallback + an explicit caveat in the executive recap. Becomes load-bearing in step 18 once production-run IFP data lets us measure the actual miscount frequency.
 
 ---
 
