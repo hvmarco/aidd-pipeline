@@ -22,6 +22,32 @@ PathLike = Union[str, Path]
 logger = logging.getLogger("aidd.ifp")
 
 
+# Extra van der Waals radii (Angstroms) for elements ProLIF's default
+# `mdanalysis` preset does not cover. Without this extension,
+# `VdWContact.detect` raises `ValueError: van der Waals radius for atom 'X'
+# not found.` on receptors containing the missing element.
+#
+# Coverage matters for cofactor-bearing crystals:
+#   Fe -- HEM (CYP2D6) and SF4 iron-sulfur clusters (DPYD).
+#   Mg -- catalytic Mg in many kinases.
+#   Mn / Zn / Cu -- alternative metalloenzymes (out of step-16 scope, but
+#                   future-proofing the radii dict is cheap).
+#   Na / K / Ca -- buffer / counter-ions occasionally retained.
+#   I  -- iodinated ligands (e.g. DPYD's 5-iodouracil ligand in 1H7W if
+#         kept by `prep_receptor`).
+#
+# Sources: Mantina et al. 2009 (J. Phys. Chem. A 113, 5806-5812) for the
+# transition metals; Bondi 1964 (J. Phys. Chem. 68, 441-451) for the
+# alkali metals + iodine. Different conventions (Pyykko, Alvarez) give
+# slightly different values; expect IFP gained/lost counts on metal-
+# proximal interactions to shift modestly when the convention changes.
+EXTRA_VDW_RADII: dict[str, float] = {
+    "Fe": 1.94, "Mg": 1.73, "Mn": 1.71, "Zn": 1.39, "Cu": 1.40,
+    "Ca": 2.31, "Na": 2.27, "K":  2.75,
+    "I":  1.98,
+}
+
+
 def load_plf_molecule(pdb_path: PathLike) -> plf.Molecule:
     """Read a PDB file and wrap it as a ProLIF Molecule.
 
@@ -109,7 +135,9 @@ def compute_ifp(
     else:
         pose_iter = ligands
 
-    fp = plf.Fingerprint()
+    fp = plf.Fingerprint(
+        parameters={"VdWContact": {"vdwradii": EXTRA_VDW_RADII}},
+    )
     fp.run_from_iterable(pose_iter, prot, progress=progress, n_jobs=n_jobs)
     return fp.to_dataframe()
 
