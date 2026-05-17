@@ -15,6 +15,7 @@ posebusters
 meeko
 biopython
 py3Dmol
+pdbfixer  # receptor cleanup for notebook 09 (small-N MoA); pulls openmm as a transitive dep
 
 # --- tabular ML ---
 scikit-learn>=1.4

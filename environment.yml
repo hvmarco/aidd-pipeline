@@ -21,6 +21,7 @@ dependencies:
   - rdkit>=2024.3
   - openbabel
   - biopython
+  - pdbfixer            # receptor cleanup for notebook 09 (small-N MoA); pulls openmm
 
   # --- public-database lookups (variant priors notebook 07) ---
   - requests           # AlphaMissense download stream + gnomAD GraphQL POST
