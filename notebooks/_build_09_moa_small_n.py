@@ -205,6 +205,7 @@ from aidd.mutation import (
 )
 from aidd.inputs import (
     RECEPTOR_PREPS,
+    assert_wt_residue,
     fetch_pdb,
     name_to_smiles,
     prep_receptor,
@@ -548,6 +549,13 @@ def _build_genotype_tree(demo: dict, variant: dict, smiles: str) -> dict:
         if handling == "wt":
             wt_prepped.replace(pdb_path)
         elif handling == "mutate_in_place":
+            # PDB-identity check pre-mutation: verify the WT PDB has the
+            # expected wild-type residue at the mutation site. Catches
+            # the class of mistake where a famous variant co-crystal is
+            # used as the WT reference (the 6OIM = KRAS G12C+sotorasib
+            # case at step-16 commit 3, where residue 12 is already CYS).
+            # Silent on pass; raises with diagnostic detail on mismatch.
+            assert_wt_residue(wt_prepped, "A", variant["position"], variant["wt_aa"])
             _apply_mutation_pdbfixer(
                 wt_prepped,
                 position=variant["position"],
@@ -862,13 +870,17 @@ print(f"\\nNAT2 walkthrough: {len(nat2_records)} HTML reports written to "
         markdown("""
 ### Interpreting the NAT2 walkthrough
 
-Three readings to take from the 4 reports:
+Four readings to take from the 4 reports (numbers below are from the step-16 Colab T4 run; nb 99 production-mode numbers may differ):
 
-- **AlphaMissense pathogenicity (priors table, row 5).** I114T, R197Q, G286E should all flag with probability >= 0.5 ("likely_pathogenic"). The evolutionary signal is independent of structure; if even AlphaMissense thinks the variant matters, that's a real prior.
-- **gnomAD allele frequency (priors table, row 6).** Allele frequency varies by ancestry: \\*5 is ~28% in Europeans but rarer in East Asians; \\*6 ~30% in Europeans, \\*7 ~3% in Europeans. Ancestry stratification matters clinically; the report shows the overall frequency, but gnomAD per-population breakdowns are available via `gnomad_frequency`'s full return dict.
-- **IFP diff (section 5 of the report).** Interactions naming the mutated residue (`THR114` gained, `ILE114` lost in \\*5) are the direct chemistry translation of the sidechain change. Interactions on other residues that change indicate longer-range pocket reshape - more interesting and more dependent on the structural model.
+- **AlphaMissense returns benign for all three NAT2 alleles.** \\*5 I114T = 0.086, \\*6 R197Q = 0.100, \\*7 G286E = 0.081 - all well below the "likely_benign" cutoff of 0.34 and far below "likely_pathogenic" at 0.564. **This is the known AM limitation on common functional pharmacogene variants**: AM's training set is heavily Mendelian-pathogenic-disease-biased (OMIM / HGMD), so it under-calls reduced-function alleles in metabolism genes like NAT2, CYP2D6, and DPYD that are functionally consequential but not catalogued as Mendelian disease. **Cross-confirms the same finding for NAT2 I114T from notebook 07's step-14 calibration** (commit `0822050` body); nb 09 generalises the lesson across all three NAT2 alleles. **Read:** when AlphaMissense returns benign for a known pharmacogene reduced-function variant, that is not the variant being benign - it is the AM blind spot. Triangulate against RaSP + gnomAD + functional literature.
 
-Combined reading: a variant that AlphaMissense calls pathogenic, gnomAD shows is common in the population at risk, and the IFP diff shows reshapes the isoniazid binding pocket is the textbook **slow-acetylator-by-substrate-binding-disruption** signature. Combined with RaSP DDG (stability), the structural mechanism is well-triangulated. Catalytic rate prediction stays a wet-lab question.
+- **RaSP ΔΔG is the load-bearing prior for this variant class.** All three return positive (destabilising) ΔΔG: \\*5 +2.88, \\*6 +1.56, \\*7 +5.07 kcal/mol. Positive ΔΔG = predicted destabilisation = reduced enzyme abundance via misfolding = slow-acetylator phenotype. **Structural destabilisation is the dominant mechanism behind the slow-acetylator phenotype, not altered substrate binding per se.** RaSP is the right structural prior for this class; AM is not. The catalysis-vs-binding caveat applies: stability captured, catalytic rate (k\\_cat) still a wet-lab question.
+
+- **gnomAD allele frequency varies by ancestry.** \\*5 is ~28% in Europeans but rarer in East Asians; \\*6 ~30% in Europeans, \\*7 ~3% in Europeans. Ancestry stratification matters clinically; the report shows the overall frequency, but per-population breakdowns are available via `gnomad_frequency`'s full return dict.
+
+- **IFP diff (section 5 of each report).** Step-16 stub fixtures produce \\*5 gained/lost = 11/12, \\*6 = 12/12, \\*7 = 6/12. Interactions naming the mutated residue are the direct chemistry translation of the sidechain change. Pocket-Cα-RMSD reads 0.000 Å for all three (PDBFixer's `applyMutations` only changes sidechain atoms; backbone Cα positions are unchanged, so Cα-RMSD over matched residues is exactly zero). The IFP-diff numbers carry the diff signal at the sidechain level; for nb 99 production runs (real Boltz-2 + gnina per-(compound, variant)) these become quantitative signal rather than stub plumbing verification.
+
+**Combined reading**: the three-prior architecture is doing exactly what it was designed for - each prior carries independent information. For NAT2 \\*5 / \\*6 / \\*7 the load-bearing signal is **RaSP destabilising** (slow-acetylator mechanism = reduced enzyme abundance via misfolding), not AlphaMissense (which is calibrated for Mendelian-pathogenic loss-of-function and is silent on pharmacogene reduced-function). The general lesson for future readers: **the right prior depends on the variant class** - AM dominates for Mendelian-disease-class missenses, RaSP dominates for pharmacogene stability-driven phenotypes, gnomAD provides the ancestry-stratified frequency context for both. Catalytic rate prediction (k\\_cat, K\\_m) stays a wet-lab question; QM/MM-class methods (out of scope; see Recap pointers) are the right tools when that becomes load-bearing.
 """),
 
         markdown("""

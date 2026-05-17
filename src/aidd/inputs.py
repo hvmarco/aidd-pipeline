@@ -467,8 +467,103 @@ def _warn_if_stereochemistry(name: str, smiles: str) -> None:
     )
 
 
+# ===========================================================================
+# assert_wt_residue
+# ===========================================================================
+
+def assert_wt_residue(
+    pdb_path: PathLike,
+    chain: str,
+    position: int,
+    expected_wt_aa: str,
+) -> None:
+    """Assert that ``pdb_path`` has ``expected_wt_aa`` at ``(chain, position)``.
+
+    Lightweight BioPython probe used pre-mutation to verify a stub fixture's
+    source PDB is actually WT at the variant site. Codifies the pre-commit
+    discipline that catches the class of mistake where a famous variant
+    co-crystal is used as the WT reference -- the 6OIM = KRAS G12C +
+    sotorasib case at step-16 commit 3, where residue 12 in 6OIM is already
+    CYS rather than the expected GLY (one Colab iteration of cost when not
+    caught locally).
+
+    BioPython-only; does NOT require PDBFixer. Cross-platform.
+
+    Parameters
+    ----------
+    pdb_path
+        Path to a PDB file (raw rcsb download or :func:`prep_receptor`
+        output -- either works, this helper only reads).
+    chain
+        Chain identifier (e.g. ``"A"``).
+    position
+        Residue number to check.
+    expected_wt_aa
+        1-letter amino acid code expected at ``(chain, position)``.
+
+    Raises
+    ------
+    ValueError
+        If ``expected_wt_aa`` is not a recognised 1-letter code.
+    AssertionError
+        On chain absence, residue absence, or residue-name mismatch.
+        Error message names the actual residue + a hint about the most
+        common mismatch class (variant co-crystal used as WT reference).
+    """
+    from Bio.PDB import PDBParser
+
+    AA_1TO3 = {
+        "A": "ALA", "R": "ARG", "N": "ASN", "D": "ASP", "C": "CYS",
+        "Q": "GLN", "E": "GLU", "G": "GLY", "H": "HIS", "I": "ILE",
+        "L": "LEU", "K": "LYS", "M": "MET", "F": "PHE", "P": "PRO",
+        "S": "SER", "T": "THR", "W": "TRP", "Y": "TYR", "V": "VAL",
+    }
+    AA_3TO1 = {v: k for k, v in AA_1TO3.items()}
+    if expected_wt_aa not in AA_1TO3:
+        raise ValueError(
+            f"expected_wt_aa must be a 1-letter amino acid code; got "
+            f"{expected_wt_aa!r}"
+        )
+    expected_3 = AA_1TO3[expected_wt_aa]
+
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("x", str(pdb_path))
+
+    for model in structure:
+        chains_present = [c.id for c in model]
+        if chain not in chains_present:
+            raise AssertionError(
+                f"chain {chain!r} not found in {pdb_path}; "
+                f"chains present: {chains_present}"
+            )
+        ch = model[chain]
+        try:
+            residue = ch[position]
+        except KeyError:
+            raise AssertionError(
+                f"residue {position} not found in chain {chain!r} of "
+                f"{pdb_path}; possible numbering offset (signal-peptide "
+                f"trimming, engineered crystallization construct, etc.)"
+            )
+        actual_3 = residue.get_resname().strip().upper()
+        if actual_3 != expected_3:
+            actual_1 = AA_3TO1.get(actual_3, "?")
+            raise AssertionError(
+                f"PDB-identity mismatch: {pdb_path} chain {chain!r} "
+                f"residue {position} is {actual_3} ({actual_1}), expected "
+                f"{expected_3} ({expected_wt_aa}). Most common cause: the "
+                f"chosen PDB is the variant complex itself (e.g. 6OIM = "
+                f"KRAS G12C+sotorasib has CYS at residue 12, not the GLY "
+                f"that would be in a WT KRAS reference like 4OBE). Pick a "
+                f"WT PDB for the structural-diff baseline."
+            )
+        return  # match; first model is enough
+    raise AssertionError(f"no models found in {pdb_path}")
+
+
 __all__ = [
     "RECEPTOR_PREPS",
+    "assert_wt_residue",
     "fetch_pdb",
     "name_to_smiles",
     "prep_receptor",
