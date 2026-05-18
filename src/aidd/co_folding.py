@@ -116,6 +116,29 @@ class BoltzResult:
         }
 
 
+class BoltzPredictionError(RuntimeError):
+    """Boltz-2 prediction failure with a typed error class + log handle.
+
+    Carries ``(error_class, log_path, log_tail)`` so callers can branch on
+    the failure category without re-parsing stderr. ``error_class`` is one
+    of the buckets :func:`_classify_error` produces: ``boltz_input_invalid``,
+    ``boltz_oom``, ``boltz_msa_failed``, ``boltz_co_fold_diverged``,
+    ``boltz_install_error``, ``boltz_nonzero_exit``.
+
+    Subclass of :class:`RuntimeError` so existing ``except RuntimeError:``
+    callers (e.g. nb 05 step-11 cells, predict_library's per-compound
+    handler) continue to work unchanged; new callers that want typed
+    handling do ``except BoltzPredictionError as exc:`` and read
+    ``exc.error_class`` / ``exc.log_tail``.
+    """
+
+    def __init__(self, msg: str, *, error_class: str, log_path: Path, log_tail: str) -> None:
+        super().__init__(msg)
+        self.error_class = error_class
+        self.log_path = log_path
+        self.log_tail = log_tail
+
+
 # ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
@@ -288,18 +311,52 @@ def _classify_error(returncode: int, log_tail: str) -> str:
     The taxonomy starts conservative; widen the buckets as real failures from
     Colab runs surface patterns that aren't covered here.
 
-    Buckets, in priority order:
+    Buckets, in priority order. Each lists its trigger (lowercased substring
+    match against the log tail, plus returncode where stated) and whether it
+    has been observed in real Boltz-2 runs on this project:
 
-    - ``boltz_input_invalid``    — Boltz's RDKit pipeline rejected the SMILES
-                                   (kekulization, valence, fragment-chooser).
-                                   The CLI prints ``Failed to process … Skipping``
-                                   and exits 0, which is why we explicitly look
-                                   for this pattern: returncode alone won't catch it.
-    - ``boltz_oom``              — out-of-memory; OOM kill (137) or "CUDA out of memory".
-    - ``boltz_msa_failed``       — MSA backend failure.
-    - ``boltz_co_fold_diverged`` — NaN / inf / model divergence.
-    - ``boltz_install_error``    — weight load failure, missing CUDA libs at startup.
-    - ``boltz_nonzero_exit``     — generic catch-all.
+    - ``boltz_input_invalid``    — triggers on log substrings
+                                   ``"failed to process"`` OR ``"skipping. error"``
+                                   OR ``"kekuliz"``. Boltz's RDKit pipeline
+                                   rejected the SMILES (kekulization, valence,
+                                   fragment-chooser). The CLI prints
+                                   ``Failed to process ... Skipping`` and exits 0,
+                                   which is why we explicitly look for this
+                                   pattern: returncode alone won't catch it.
+                                   **Observed in real runs** (step-11 nb 05 ERK2
+                                   cohort: 1 of 413 compounds; today's DPYD T4
+                                   OOM also surfaces this secondarily when the
+                                   affinity head's missing-file error chains back).
+    - ``boltz_oom``              — triggers on returncode == 137 (Linux OOM kill)
+                                   OR log substring ``"out of memory"`` OR
+                                   ``"cuda oom"``. **Observed in real runs** --
+                                   today's DPYD T4 closure attempt hit this
+                                   (T4's 16 GB VRAM insufficient for Boltz-2
+                                   cofolding on a ~1025-residue protein).
+    - ``boltz_msa_failed``       — triggers on log substrings ``"mmseqs"`` OR
+                                   ``"msa server"`` OR ``"alphafold msa"``.
+                                   MSA backend failure (ColabFold API timeout,
+                                   mmseqs2 crash, etc.). **Designed pre-emptively**
+                                   -- the ColabFold MSA server has been stable
+                                   in this project's runs; bucket exists for
+                                   future failures.
+    - ``boltz_co_fold_diverged`` — triggers on log substring ``"nan"`` AND
+                                   (``"loss"`` OR ``"logit"``). NaN / inf in
+                                   the diffusion sampler or affinity-head
+                                   outputs. **Designed pre-emptively** --
+                                   standard ML-divergence pattern; not observed
+                                   in this project's Boltz-2 runs.
+    - ``boltz_install_error``    — triggers on log substrings ``"could not load"``
+                                   OR ``"cuda library"`` OR (``"weight"`` AND
+                                   ``"load"``). Weight load failure, missing CUDA
+                                   libs at startup, broken Boltz install.
+                                   **Designed pre-emptively** -- the `boltz --help`
+                                   probe in the install cell catches most of
+                                   these at setup time; this bucket fires only
+                                   if a later call somehow proceeds past the
+                                   probe (defensive).
+    - ``boltz_nonzero_exit``     — fallback when none of the above match;
+                                   generic non-zero exit.
     """
     t = log_tail.lower()
     if "failed to process" in t or "skipping. error" in t or "kekuliz" in t:
@@ -461,7 +518,14 @@ def predict_complex(
         with boltz_log.open("w") as fh:
             proc = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True)
         if proc.returncode != 0:
-            raise RuntimeError(_format_boltz_error(proc.returncode, boltz_log))
+            log_tail = _read_log_tail(boltz_log, n=30)
+            error_class = _classify_error(proc.returncode, log_tail)
+            raise BoltzPredictionError(
+                _format_boltz_error(proc.returncode, boltz_log),
+                error_class=error_class,
+                log_path=boltz_log,
+                log_tail=log_tail,
+            )
 
         # Boltz-2's CLI exits 0 even when it skips an input it can't process
         # ("Failed to process … Skipping. Error: <reason>"). Catch this here
@@ -469,7 +533,13 @@ def predict_complex(
         # of letting _find_prediction_dir raise FileNotFoundError.
         log_text = boltz_log.read_text() if boltz_log.exists() else ""
         if "Failed to process" in log_text or "Skipping. Error:" in log_text:
-            raise RuntimeError(_format_boltz_input_error(log_text, boltz_log))
+            log_tail = _read_log_tail(boltz_log, n=30)
+            raise BoltzPredictionError(
+                _format_boltz_input_error(log_text, boltz_log),
+                error_class="boltz_input_invalid",
+                log_path=boltz_log,
+                log_tail=log_tail,
+            )
 
         pred_dir = _find_prediction_dir(boltz_out_root)
         parsed = _parse_boltz_outputs(pred_dir)

@@ -459,6 +459,12 @@ def render_moa_html(record: dict, out_path: Path) -> Path:
 
     is_wt           = variant.strip().upper() == "WT"
     is_out_of_scope = handling.startswith("out_of_scope_")
+    is_boltz_failed = handling.startswith("boltz_failed_")
+    # Pose viewer + IFP + structural diff are all skipped when the structural
+    # pipeline didn't produce a pose -- either because the variant class is
+    # out-of-scope (splice / promoter), OR because Boltz-2 failed at runtime
+    # (OOM / input rejection / etc.) and there is no .cif to view.
+    is_pose_unavailable = is_out_of_scope or is_boltz_failed
 
     if is_wt:
         title = f"{compound} bound to {target} (UniProt {uniprot}, WT baseline)"
@@ -520,12 +526,36 @@ def render_moa_html(record: dict, out_path: Path) -> Path:
         + '</tbody></table>'
     )
 
-    # --- Out-of-scope branch ---------------------------------------------
-    if is_out_of_scope:
-        reason = (
-            record.get("out_of_scope_reason")
-            or "This variant class cannot be modelled by the structural pipeline."
-        )
+    # --- Pose-unavailable branch (out-of-scope OR Boltz-2 runtime failure) ---
+    if is_pose_unavailable:
+        if is_boltz_failed:
+            error_class = handling[len("boltz_failed_"):] or "unknown"
+            log_tail = record.get("error_detail") or ""
+            log_tail_block = (
+                f"<details><summary>Boltz log tail (last lines)</summary>"
+                f"<pre>{log_tail}</pre></details>"
+                if log_tail else ""
+            )
+            section_2_title = "2. Structural modelling: Boltz-2 prediction failed"
+            banner_html = (
+                f'<div class="boltz-fail">'
+                f'<b>Boltz-2 affinity unavailable for this pair</b>: '
+                f'<code>{error_class}</code>. The variant priors below '
+                f'(AlphaMissense + gnomAD + RaSP) are independent of Boltz '
+                f'and load correctly. Re-run on a larger-memory GPU (A100 / '
+                f'L4) or with reduced Boltz settings to fill the Boltz '
+                f'affinity row for this pair.'
+                f'{log_tail_block}'
+                f'</div>'
+            )
+        else:
+            reason = (
+                record.get("out_of_scope_reason")
+                or "This variant class cannot be modelled by the structural pipeline."
+            )
+            section_2_title = "2. Structural modelling: out of scope"
+            banner_html = f'<div class="oos">{reason}</div>'
+
         body = f"""
         <h2>1. Compound + variant</h2>
         <p><b>Target:</b> {target} (UniProt {uniprot})</p>
@@ -533,8 +563,8 @@ def render_moa_html(record: dict, out_path: Path) -> Path:
         <p><b>Compound:</b> {compound}</p>
         <p><b>SMILES:</b> <code>{smiles}</code></p>
 
-        <h2>2. Structural modelling: out of scope</h2>
-        <div class="oos">{reason}</div>
+        <h2>{section_2_title}</h2>
+        {banner_html}
 
         <h2>3. Scores + nb 07 priors</h2>
         {scores_html}
@@ -642,6 +672,11 @@ def render_moa_html(record: dict, out_path: Path) -> Path:
                 margin-top: 28px; font-size: 0.95em; }
       .oos { background: #f0f4ff; padding: 10px 14px; border-left: 4px solid #4060a8;
              margin-top: 8px; font-size: 0.95em; }
+      .boltz-fail { background: #fff4e0; padding: 10px 14px; border-left: 4px solid #c47a00;
+             margin-top: 8px; font-size: 0.95em; }
+      .boltz-fail details { margin-top: 8px; }
+      .boltz-fail pre { background: #fffaf0; padding: 8px; border: 1px solid #e0c890;
+             border-radius: 3px; font-size: 0.85em; overflow-x: auto; }
     """
 
     html = f"""<!doctype html>

@@ -1272,13 +1272,18 @@ def _run_target_moa(target_config, compounds):
     Returns the summary DataFrame (also printed inline) or None when no
     compounds resolved.
     \"\"\"
-    from aidd.co_folding import predict_complex, require_boltz
+    from aidd.co_folding import predict_complex, require_boltz, BoltzPredictionError
     from Bio.SeqUtils import seq1
     # NOTE: require_boltz() moved out of the helper top -- it is now called
     # just before the first predict_complex invocation in the in-scope loop
     # below. Demos where no in-scope genotype actually needs Boltz (e.g. a
     # future call with empty compounds or no resolvable SMILES) will
     # degrade gracefully without tripping the CLI-not-found check.
+    # Per-(compound, variant) Boltz failures (OOM, input-invalid, etc.) are
+    # caught individually in the in-scope loop: a single failed pair gets a
+    # NaN summary row + a partial priors-only HTML report, while remaining
+    # demos continue. See feedback_colab_iteration_cost.md -- one OOM should
+    # not kill the entire closure run.
 
     target_name = target_config["name"]
     uniprot     = target_config["uniprot"]
@@ -1370,17 +1375,58 @@ def _run_target_moa(target_config, compounds):
             geno_seq = "".join(seq1(r.get_resname()) for r in s[0]["A"] if r.id[0] == " ")
             cdir = _genotype_dir(target_name, genotype_label if genotype_label != "WT" else None) / "boltz" / "per_compound" / compound_name.replace(" ", "_")
             cdir.mkdir(parents=True, exist_ok=True)
-            boltz_result = predict_complex(geno_seq, smiles, cdir, compound_id=compound_name.replace(" ", "_"))
 
+            # Priors resolved before the try -- they're independent of Boltz
+            # and need to be on the summary row whether Boltz succeeds or fails.
             priors = variant_priors.get(variant["label"]) if variant else {
                 "am_score": None, "am_class": None,
                 "gnomad_af": None, "gnomad_found": None, "gnomad_flipped": None,
                 "rasp_ddg": None,
             }
+            handling_value = variant["handling"] if variant else "wt"
+            html_path = moa_root / f"{compound_name.replace(' ', '_')}_{_genotype_slug(genotype_label)}.html"
+
+            try:
+                boltz_result = predict_complex(geno_seq, smiles, cdir, compound_id=compound_name.replace(" ", "_"))
+            except BoltzPredictionError as exc:
+                # Per-(compound, variant) Boltz failure: log + partial HTML
+                # (priors only) + continue. predict_complex writes no cache
+                # entry on failure, so a re-run on a larger GPU (A100) will
+                # re-attempt this pair cleanly.
+                print(f"  FAIL: Boltz {exc.error_class} for {compound_name} x {genotype_label}")
+                fail_record = {
+                    "target_name": target_name, "uniprot": uniprot,
+                    "variant_label": genotype_label,
+                    "variant_handling": f"boltz_failed_{exc.error_class}",
+                    "compound_name": compound_name, "smiles": smiles,
+                    "priors": {
+                        "alphamissense": {"score": priors["am_score"], "class": priors["am_class"]},
+                        "gnomad":        {"allele_freq_overall": priors["gnomad_af"],
+                                           "found": priors["gnomad_found"],
+                                           "reference_flipped": priors["gnomad_flipped"]},
+                        "rasp":          {"ddg": priors["rasp_ddg"]},
+                    },
+                    "error_detail": exc.log_tail,
+                }
+                render_moa_html(fail_record, html_path)
+                print(f"  HTML (Boltz-failed; priors-only): {pretty_path(html_path, DATA_ROOT, REPO_ROOT)}")
+                summary_rows.append({
+                    "compound": compound_name, "variant": genotype_label,
+                    "handling": handling_value,
+                    "boltz_affinity": None, "boltz_affinity_probability": None,
+                    "am_score": priors["am_score"], "am_class": priors["am_class"],
+                    "gnomad_af": priors["gnomad_af"], "rasp_ddg": priors["rasp_ddg"],
+                    "html_report": str(html_path.relative_to(moa_root)),
+                    "error": exc.error_class,
+                    "error_detail": exc.log_tail.replace("\\n", " | ")[:300],
+                })
+                continue
+
+            # Happy path: Boltz produced a complex. Build the full record.
             record = {
                 "target_name": target_name, "uniprot": uniprot,
                 "variant_label": genotype_label,
-                "variant_handling": variant["handling"] if variant else "wt",
+                "variant_handling": handling_value,
                 "compound_name": compound_name, "smiles": smiles,
                 "priors": {
                     "alphamissense": {"score": priors["am_score"], "class": priors["am_class"]},
@@ -1396,17 +1442,18 @@ def _run_target_moa(target_config, compounds):
                     "posebusters_pass":            None,
                 },
             }
-            html_path = moa_root / f"{compound_name.replace(' ', '_')}_{_genotype_slug(genotype_label)}.html"
             render_moa_html(record, html_path)
             print(f"  HTML: {pretty_path(html_path, DATA_ROOT, REPO_ROOT)}")
             summary_rows.append({
                 "compound": compound_name, "variant": genotype_label,
-                "handling": variant["handling"] if variant else "wt",
+                "handling": handling_value,
                 "boltz_affinity": boltz_result.affinity,
                 "boltz_affinity_probability": boltz_result.affinity_probability,
                 "am_score": priors["am_score"], "am_class": priors["am_class"],
                 "gnomad_af": priors["gnomad_af"], "rasp_ddg": priors["rasp_ddg"],
                 "html_report": str(html_path.relative_to(moa_root)),
+                "error": None,
+                "error_detail": None,
             })
 
         # Out-of-scope variants: priors-only HTML reports (no Boltz-2 call).
@@ -1437,6 +1484,8 @@ def _run_target_moa(target_config, compounds):
                 "boltz_affinity": None, "boltz_affinity_probability": None,
                 "am_score": None, "am_class": None, "gnomad_af": None, "rasp_ddg": None,
                 "html_report": str(html_path.relative_to(moa_root)),
+                "error": None,
+                "error_detail": None,
             })
 
     if not summary_rows:
