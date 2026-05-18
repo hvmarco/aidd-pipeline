@@ -231,7 +231,64 @@ print(f"DERIVED_ROOT: {DERIVED_ROOT}")
         # CELL 6 -- CONFIGURATION OVERVIEW (markdown)
         # ====================================================================
         markdown("""
-## 2 - Configuration
+## 2 - Prerequisite caches
+
+### Background
+
+Two caches must be present on Drive before per-variant priors resolve cleanly. **AlphaMissense's demo-set parquet** auto-builds on first call (notebook 07 populated this when you ran it; the cell below does not touch it). **RaSP's full-proteome demo-set parquet** does not auto-build — it requires an explicit operator step the first time on each machine, because the upstream archive is 9 GB and the cache build is a meaningful design choice the project's earlier notebooks deferred to step 17.
+
+The cell below is **idempotent**. On first run on Colab it (a) downloads the upstream archive to a Drive-cached zip (~10–20 min on T4; the zip survives runtime kills because it lives on Drive, not `/content/`), (b) calls `_build_rasp_full_cache()` to produce the small parquet (~2–5 min), and (c) cross-checks that all seven demo genes (NAT2, DPYD, CYP2D6, UGT1A1, KRAS, BRCA1, ESR1) resolve. On subsequent runs (local or Colab) the cell skips in seconds. On a local run with the cache absent the cell prints a warning and continues — RaSP lookups for non-NAT2 demo genes will return `None` until the cache is built on Colab once.
+
+The default ERK2 library run does not require RaSP at all (no variants); for ERK2 alone you can skip Stage 0. For any non-ERK2 demo (DPYD / NAT2 / CYP2D6 / KRAS / BRCA1 / ESR1 / UGT1A1) Stage 0 is load-bearing.
+
+**Cleanup.** Once the cell prints `Cache built: all 7 demo genes covered`, the 9 GB zip at `<DATA_ROOT>/cache/rasp/rasp_af_prism.zip` is no longer needed — subsequent runs read only the small parquet (`<DATA_ROOT>/cache/rasp/full_proteome_demo_set.parquet`). Delete the zip via the Drive web UI (or `!rm <path>` on Colab) to recover the ~9 GB of Drive quota.
+"""),
+        code(title="Stage 0: idempotent RaSP full-proteome cache build (Drive-cached)", source="""
+from aidd.stability import _build_rasp_full_cache, rasp_covers, RASP_AF_PRISM_URL
+
+RASP_ZIP = CACHE_ROOT / "rasp" / "rasp_af_prism.zip"
+PARQUET  = RASP_CACHE / "full_proteome_demo_set.parquet"
+
+_all_covered = (
+    PARQUET.exists()
+    and all(rasp_covers(uid, cache_dir=RASP_CACHE) for uid in DEMO_SET_UNIPROT_IDS)
+)
+
+if _all_covered:
+    print(f"  Cache present at {pretty_path(PARQUET, DATA_ROOT, REPO_ROOT)}")
+    print(f"  Covers all {len(DEMO_SET_UNIPROT_IDS)} demo genes -- skipping rebuild.")
+elif not IS_COLAB:
+    print(f"  Stage 0 skipped (not on Colab). RaSP lookups for non-NAT2 demo genes")
+    print(f"  will return None. Run nb 99 once on Colab to build the cache;")
+    print(f"  subsequent runs (local or Colab) read it without rebuilding.")
+else:
+    RASP_ZIP.parent.mkdir(parents=True, exist_ok=True)
+    if RASP_ZIP.exists() and RASP_ZIP.stat().st_size > 5 * 1024**3:
+        size_gb = RASP_ZIP.stat().st_size / 1024**3
+        print(f"  Zip cached on Drive ({size_gb:.1f} GB) -- skipping download.")
+    else:
+        print(f"  Downloading RaSP archive (~9 GB) to {pretty_path(RASP_ZIP, DATA_ROOT, REPO_ROOT)}...")
+        print(f"  ~10-20 min on Colab T4; Drive-cached thereafter.")
+        !wget -c --tries=5 --waitretry=10 -O {RASP_ZIP} {RASP_AF_PRISM_URL}
+        size_gb = RASP_ZIP.stat().st_size / 1024**3
+        assert size_gb > 5.0, f"Download size {size_gb:.2f} GB suspiciously small; re-run this cell."
+        print(f"  Downloaded {size_gb:.2f} GB.")
+    print(f"  Building demo-set parquet (CSV parser per step-17 commit 3.5)...")
+    _build_rasp_full_cache(source=RASP_ZIP, cache_dir=RASP_CACHE, overwrite=True)
+    missing = [uid for uid in DEMO_SET_UNIPROT_IDS
+                if not rasp_covers(uid, cache_dir=RASP_CACHE)]
+    if missing:
+        raise RuntimeError(
+            f"Cache built at {PARQUET} but does NOT cover all 7 demo genes. "
+            f"Missing: {missing}. Per-protein coverage report (printed by "
+            f"_build_rasp_full_cache above this assertion) shows which genes "
+            f"failed; patch the parser or the cache builder."
+        )
+    print(f"  Cache built: all 7 demo genes covered.")
+"""),
+
+        markdown("""
+## 3 - Configuration
 
 ### Background
 
@@ -438,7 +495,7 @@ elif RUN_MODE == 'moa':
         # CELL 9 -- INPUTS & PRIORS (markdown)
         # ====================================================================
         markdown("""
-## 3 - Inputs + variant priors
+## 4 - Inputs + variant priors
 
 ### Background
 
@@ -620,7 +677,7 @@ else:
         # CELL 12 -- FOLD STAGE (markdown)
         # ====================================================================
         markdown("""
-## 4 - Fold (dispatch on FOLD_PROVIDER)
+## 5 - Fold (dispatch on FOLD_PROVIDER)
 
 ### Background
 
@@ -689,7 +746,7 @@ print(f"  (for crystal PDBs this is a real B-factor; for AlphaFold models it is 
         # CELL 15 -- LIBRARY MODE OVERVIEW (markdown)
         # ====================================================================
         markdown("""
-## 5 - Library mode
+## 6 - Library mode
 
 ### Background
 
@@ -1038,7 +1095,7 @@ else:
         # CELL 23 -- MoA MODE OVERVIEW (markdown)
         # ====================================================================
         markdown("""
-## 6 - MoA mode (small-N mechanism-of-action)
+## 7 - MoA mode (small-N mechanism-of-action)
 
 ### Background
 
@@ -1159,7 +1216,7 @@ Open the per-compound HTML files to see the embedded 3D pose viewer + the ProLIF
         # CELL 26 -- EXECUTIVE SUMMARY (markdown)
         # ====================================================================
         markdown("""
-## 7 - Executive summary
+## 8 - Executive summary
 
 ### Result
 

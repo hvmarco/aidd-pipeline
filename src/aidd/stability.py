@@ -30,8 +30,11 @@ public API is identical for either source. The cache loader prefers the
 full-proteome file when present.
 
 - ``full_proteome_demo_set.parquet`` — built by :func:`_build_rasp_full_cache`
-  from the upstream's 9 GB AlphaFold-based PRISM-format archive
-  (``rasp_preds_alphafold_UP000005640_9606_HUMAN_v2_prism_dir.zip``).
+  from the upstream's 9 GB AlphaFold-based archive
+  (``rasp_preds_alphafold_UP000005640_9606_HUMAN_v2_prism_dir.zip``;
+  the ``prism_dir`` suffix in the upstream filename is misleading
+  nomenclature — entries are ``.csv`` files, not PRISM ``.txt``;
+  see :func:`_parse_rasp_csv_text` for the actual format).
   Covers all 23,391 human SwissProt proteins, so all seven demo genes
   resolve. **One-off operator step per machine**: download the zip,
   pass the path to :func:`_build_rasp_full_cache`, write the small
@@ -48,6 +51,10 @@ full-proteome file when present.
   compatibility.
 
 Step 15 added the full-proteome cache and the cache-loader auto-detect.
+Step 17 corrected the parser's format assumption — upstream archive ships
+CSV per protein (despite the ``prism_dir`` zip name), not PRISM YAML +
+columns text. Public API (:func:`rasp_ddg`, :func:`rasp_covers`,
+:func:`_build_rasp_full_cache`) and the parquet schema are unchanged.
 Old callers see no API change.
 
 Coverage of the seven demo genes
@@ -365,26 +372,27 @@ def _parse_rasp_csv_line(line: str, keep_uniprots: set[str]) -> tuple | None:
 # Full-proteome cache builder (AlphaFold-RaSP PRISM archive)
 # ===========================================================================
 
-# PRISM file format (Blaabjerg et al. upstream):
-# - YAML header bracketed by lines like ``# -------`` (>= 3 dashes).
-# - Each YAML line has a leading ``#`` comment marker (stripped before parsing).
-# - Header fields used here: ``protein.uniprot``, ``protein.sequence``,
-#   ``columns`` (dict of column-name -> description).
-# - Data block starts after the closing ``# -------``; first non-comment
-#   non-blank line is a whitespace-separated column header; subsequent
-#   non-empty lines are data rows with the column ``variant`` encoded as
-#   ``<wt><pos><alt>`` (e.g. ``M1A``). The literal token ``WT`` marks the
-#   wild-type baseline row and is skipped.
-# - RaSP-specific columns observed in the upstream's release notes:
-#   ``score_ml`` (raw ΔΔG in kcal/mol) and ``score_ml_fermi`` (Fermi-Dirac-
-#   transformed score in [0,1]); we prefer ``score_ml`` and document the
-#   fallback choice in the coverage report.
+# Upstream RaSP per-UniProt CSV file format (verified 2026-05-18):
+# - Header row (first line): ``uniprot,pdbid,chainid,sequence,variant,wt_nlf,
+#   mt_nlf,score_ml_fermi,score_ml,b_factors``.
+# - One row per (position, alt_aa) substitution; saturated 19-alt scan over
+#   every position. ``variant`` is encoded ``<wt><pos><alt>`` (e.g. ``M1A``);
+#   a literal ``WT`` row would be skipped (none observed in the AF archive).
+# - ``score_ml`` is the raw ΔΔG in kcal/mol (positive = destabilising). This
+#   is the value we cache. ``score_ml_fermi`` is the Fermi-Dirac-transformed
+#   [0, 1] view and is NOT cached.
+# - ``sequence`` is the full protein sequence (same per row, used only for
+#   the saturated-scan yield sanity check below).
+# - File-system layout inside the zip:
+#   ``rasp_preds_alphafold_..._prism_dir/<U[0:2]>/<U[2:4]>/<U[4:6]>/rasp_pred_AF-<UNIPROT>-F1-model_v2A.csv``.
+#   The ``prism_dir`` zip suffix is upstream naming for the directory shape;
+#   the entries are CSV.
 
-# Defensive sanity-check thresholds (used by ``_parse_prism_text``):
+# Defensive sanity-check thresholds (used by ``_parse_rasp_csv_text``):
 # A saturated single-residue scan produces 19 alts × N positions rows per
 # protein. We accept ≥ 50 % of that lower bound as "ok_low" and emit a
 # warning; below that fraction we flag the file as malformed.
-PRISM_VARIANT_OK_FRACTION = 0.5
+RASP_VARIANT_OK_FRACTION = 0.5
 
 
 def _build_rasp_full_cache(
@@ -445,27 +453,32 @@ def _build_rasp_full_cache(
         parsing succeeded — both indicate the input archive's structure
         does not match the documented PRISM layout.
 
-    Format assumptions (verified against the per-UniProt coverage report
-    that this function prints; mismatches surface as ``status: "error"``
-    rows in the report)
-    -------------------------------------------------------------------
+    Format assumptions (step 17, verified against the actual upstream
+    archive — not the originally-documented PRISM format; mismatches
+    surface as ``status: "error"`` rows in the per-protein coverage
+    report this function prints)
+    --------------------------------------------------------------------
 
-    1. Per-UniProt PRISM files are sharded in the layout
-       ``<archive_root>/<U[0:2]>/<U[2:4]>/<U[4:6]>/...``. ``_find_prism_*``
-       looks for ``.txt`` files whose names contain the full UniProt
-       accession within that sharded prefix.
-    2. The PRISM YAML header includes ``protein.uniprot`` matching the
-       expected accession. Mismatch surfaces a clear error rather than
-       writing the wrong protein's predictions.
-    3. The data block has a column named ``score_ml`` (preferred) or
-       ``score_ml_fermi`` or ``score`` (fallbacks); the selected column
-       is recorded in the report so the operator can confirm.
-    4. The variant column uses the ``<wt><pos><alt>`` encoding; the
-       literal ``WT`` row and any ``M1=`` / ``M1*`` rows are skipped.
+    1. Per-UniProt files are sharded in the layout
+       ``<archive_root>/<U[0:2]>/<U[2:4]>/<U[4:6]>/...`` under the wrapper
+       directory ``rasp_preds_alphafold_..._prism_dir/``. File names match
+       ``rasp_pred_AF-<UNIPROT>-F1-model_v2A.csv``. The ``prism_dir`` zip
+       suffix is misleading nomenclature — entries are CSV, not PRISM
+       ``.txt``.
+    2. CSV header: ``uniprot,pdbid,chainid,sequence,variant,wt_nlf,mt_nlf,
+       score_ml_fermi,score_ml,b_factors``. Required for caching:
+       ``uniprot``, ``variant``, ``score_ml``. Missing columns surface a
+       clear error rather than silently dropping data.
+    3. The ``variant`` column uses ``<wt><pos><alt>`` encoding (e.g.
+       ``M1A``); a literal ``WT`` row or any ``<pos>=`` / ``<pos>*`` rows
+       are skipped.
+    4. The ``score_ml`` column is the raw ΔΔG in kcal/mol (positive =
+       destabilising). ``score_ml_fermi`` is the Fermi-Dirac-transformed
+       [0, 1] view and is NOT cached.
     5. The parsed variant count is at least
-       :data:`PRISM_VARIANT_OK_FRACTION` × 19 × (sequence_length − 1).
-       Falling under this threshold flips the per-protein status to
-       ``ok_low`` and is logged at WARNING.
+       :data:`RASP_VARIANT_OK_FRACTION` × 19 × (sequence_length − 1) (the
+       saturated single-residue scan upper bound). Below the threshold the
+       per-protein status flips to ``ok_low`` and a WARNING is logged.
     """
     source_path = Path(source)
     if not source_path.exists():
@@ -503,7 +516,7 @@ def _build_rasp_full_cache(
                     "reason": f"read failed: {exc}",
                 }
                 continue
-            rows, report = _parse_prism_text(text, uniprot)
+            rows, report = _parse_rasp_csv_text(text, uniprot)
             all_rows.extend(rows)
             report["source"] = str(file_path.relative_to(source_path))
             coverage[uniprot] = report
@@ -527,7 +540,7 @@ def _build_rasp_full_cache(
                         "reason": f"zip read failed for {entry}: {exc}",
                     }
                     continue
-                rows, report = _parse_prism_text(text, uniprot)
+                rows, report = _parse_rasp_csv_text(text, uniprot)
                 all_rows.extend(rows)
                 report["source"] = entry
                 coverage[uniprot] = report
@@ -589,19 +602,19 @@ def _build_rasp_full_cache(
 
 
 def _find_prism_file_in_dir(root: Path, uniprot: str) -> Path | None:
-    """Return the first ``.txt`` under ``root/<shard>/...`` whose name contains ``uniprot``.
+    """Return the first ``.csv`` under ``root/<shard>/...`` whose name contains ``uniprot``.
 
-    Layout per upstream: ``P12345`` → ``P1/23/45/<...>.txt``. Some PRISM
-    releases bury the file one level deeper or change the filename prefix;
-    we glob within the sharded directory rather than assuming a fixed name.
+    Layout per upstream: ``P12345`` → ``P1/23/45/rasp_pred_AF-P12345-F1-model_v2A.csv``.
+    Some extractions place the per-UniProt tree under a wrapper directory
+    matching the zip's name (``rasp_preds_alphafold_..._prism_dir/``); we
+    search one level down in that case rather than assuming a flat root.
     """
     if len(uniprot) != 6:
         return None
     shard = Path(uniprot[0:2]) / uniprot[2:4] / uniprot[4:6]
     shard_root = root / shard
     if not shard_root.exists():
-        # Some extractions place the per-UniProt tree under a top-level
-        # archive-name directory; search one level down too.
+        # Wrapper directory present (typical for the upstream zip extracted as-is).
         for child in root.iterdir():
             if child.is_dir():
                 candidate = child / shard
@@ -610,151 +623,100 @@ def _find_prism_file_in_dir(root: Path, uniprot: str) -> Path | None:
                     break
         else:
             return None
-    matches = sorted(p for p in shard_root.rglob("*.txt") if uniprot in p.name)
+    matches = sorted(p for p in shard_root.rglob("*.csv") if uniprot in p.name)
     return matches[0] if matches else None
 
 
 def _find_prism_entry_in_zip(zf: zipfile.ZipFile, uniprot: str) -> str | None:
-    """Locate the first ``.txt`` entry inside ``zf`` matching the sharded layout."""
+    """Locate the first ``.csv`` entry inside ``zf`` matching the sharded layout.
+
+    Sharded prefix may have a top-level wrapper directory before it (the
+    upstream zip's ``rasp_preds_alphafold_..._prism_dir/`` wrapper); the
+    substring check on ``shard_prefix`` matches either layout.
+    """
     if len(uniprot) != 6:
         return None
     shard_prefix = f"{uniprot[0:2]}/{uniprot[2:4]}/{uniprot[4:6]}/"
     matches: list[str] = []
     for name in zf.namelist():
-        if not name.endswith(".txt"):
+        if not name.endswith(".csv"):
             continue
-        # Sharded prefix may have a top-level archive-name directory before it.
         if shard_prefix in name and uniprot in Path(name).name:
             matches.append(name)
     matches.sort()
     return matches[0] if matches else None
 
 
-def _parse_prism_text(text: str, expected_uniprot: str) -> tuple[list[tuple], dict]:
-    """Parse one PRISM ``.txt`` body; return (rows, coverage_report).
+def _parse_rasp_csv_text(text: str, expected_uniprot: str) -> tuple[list[tuple], dict]:
+    """Parse one RaSP per-UniProt CSV body; return (rows, coverage_report).
+
+    Upstream CSV schema (verified 2026-05-18; one row per (position, alt_aa)
+    substitution; saturated 19-alt scan)::
+
+        uniprot,pdbid,chainid,sequence,variant,wt_nlf,mt_nlf,score_ml_fermi,score_ml,b_factors
+
+    The load-bearing columns are ``uniprot`` (must match
+    ``expected_uniprot``), ``variant`` (``<wt><pos><alt>`` encoding), and
+    ``score_ml`` (raw ΔΔG in kcal/mol; positive = destabilising).
+    ``score_ml_fermi`` is the Fermi-Dirac-transformed [0, 1] view and is
+    NOT cached. ``sequence`` is the full protein sequence (same per row,
+    used only for the saturated-scan yield sanity check).
 
     ``rows`` are tuples shaped for the cache parquet:
-    ``(uniprot_id, pdb, position, wt_aa, mut_aa, rasp_ddg)``. The ``pdb``
-    column is set to the literal ``"AF"`` for AlphaFold-sourced entries
-    (the cache schema is shared with the experimental builder, where
-    ``pdb`` is a PDB accession).
+    ``(uniprot_id, "AF", position, wt_aa, mut_aa, rasp_ddg)``. The ``pdb``
+    column is set to the literal ``"AF"`` for all AlphaFold-sourced
+    entries — schema match with the legacy experimental cache (where
+    ``pdb`` is a PDB accession) without per-row inflation of the
+    invariant AF-model ID. Per-row AF-model provenance lives in the
+    upstream zip filename and the build-time :data:`RASP_LAST_VERIFIED`
+    constant.
 
     ``coverage_report`` is a dict with at minimum a ``status`` field of:
 
     - ``"ok"`` — parse + sanity checks passed.
-    - ``"ok_low"`` — parsed below :data:`PRISM_VARIANT_OK_FRACTION` of the
+    - ``"ok_low"`` — parsed below :data:`RASP_VARIANT_OK_FRACTION` of the
       expected saturated variant count for this protein; suspect file
-      truncation or unexpected score-column layout. Rows are still
-      returned but the caller should inspect.
-    - ``"error"`` — parser failed structurally (no header, no score
-      column, UniProt mismatch); no rows returned.
+      truncation. Rows are still returned but the caller should inspect.
+    - ``"error"`` — parser failed structurally (empty file, missing
+      required column, no rows matched ``expected_uniprot``). No rows
+      returned.
 
-    Additional report fields when parsing succeeds: ``n_rows``,
-    ``seq_len``, ``score_col``, ``skipped_wt``, ``skipped_other``.
+    Additional fields when parsing succeeds: ``n_rows``, ``seq_len``,
+    ``score_col`` (always ``"score_ml"``), ``skipped_wt``, ``skipped_other``.
     """
-    # Lazy yaml import keeps the module importable on minimal envs.
-    try:
-        import yaml
-    except ImportError:
-        return [], {
-            "status": "error",
-            "reason": "PyYAML not available; required for PRISM header parsing",
-        }
+    import csv as _csv
+    import io as _io
 
-    lines = text.splitlines()
+    reader = _csv.DictReader(_io.StringIO(text))
+    if reader.fieldnames is None:
+        return [], {"status": "error", "reason": "empty CSV (no header row)"}
 
-    # Locate header delimiters: lines that are PRISM "#---..." separators.
-    delim_idx: list[int] = []
-    for i, raw in enumerate(lines):
-        stripped = raw.strip()
-        # First non-comment chars after '#' must be all '-' (at least three).
-        if stripped.startswith("#"):
-            body = stripped.lstrip("#").strip()
-            if len(body) >= 3 and set(body) == {"-"}:
-                delim_idx.append(i)
-        if len(delim_idx) >= 2:
-            break
-    if len(delim_idx) < 2:
-        return [], {
-            "status": "error",
-            "reason": f"PRISM header delimiters not found (expected two '#----' lines; found {len(delim_idx)})",
-        }
-    header_start, header_end = delim_idx[0], delim_idx[1]
-
-    header_lines = lines[header_start + 1:header_end]
-    yaml_body = "\n".join(_strip_prism_comment(l) for l in header_lines)
-    try:
-        header = yaml.safe_load(yaml_body) or {}
-    except yaml.YAMLError as exc:
-        return [], {
-            "status": "error",
-            "reason": f"YAML header parse failed: {exc}",
-        }
-
-    protein = header.get("protein") or {}
-    columns = header.get("columns") or {}
-    uniprot_in_header = (protein.get("uniprot") or "").strip()
-    sequence = (protein.get("sequence") or "").strip()
-
-    if uniprot_in_header != expected_uniprot:
+    required = {"uniprot", "variant", "score_ml"}
+    missing = required - set(reader.fieldnames)
+    if missing:
         return [], {
             "status": "error",
             "reason": (
-                f"UniProt mismatch: header says {uniprot_in_header!r}; "
-                f"expected {expected_uniprot!r}"
+                f"CSV missing required columns {sorted(missing)}; have "
+                f"{reader.fieldnames}"
             ),
         }
-
-    # Locate the data block: first non-blank, non-comment line after the header.
-    data_idx = header_end + 1
-    while data_idx < len(lines):
-        s = lines[data_idx].strip()
-        if s and not s.startswith("#"):
-            break
-        data_idx += 1
-    if data_idx >= len(lines):
-        return [], {"status": "error", "reason": "no data block after header"}
-
-    column_names = lines[data_idx].split()
-    if "variant" not in column_names:
-        return [], {
-            "status": "error",
-            "reason": f"data column header missing 'variant'; got {column_names!r}",
-        }
-
-    score_col: str | None = None
-    for candidate in ("score_ml", "score_ml_fermi", "score"):
-        if candidate in column_names:
-            score_col = candidate
-            break
-    if score_col is None:
-        # Fall back to any column with 'score' in its name.
-        for c in column_names:
-            if "score" in c.lower():
-                score_col = c
-                break
-    if score_col is None:
-        return [], {
-            "status": "error",
-            "reason": f"no score column found in {column_names!r}; "
-                       "expected one of ('score_ml', 'score_ml_fermi', 'score')",
-        }
-    variant_idx = column_names.index("variant")
-    score_idx = column_names.index(score_col)
 
     variant_re = re.compile(r"^([A-Za-z])(\d+)([A-Za-z*=~])$")
     rows: list[tuple[str, str, int, str, str, float]] = []
     skipped_wt = 0
     skipped_other = 0
-    for raw in lines[data_idx + 1:]:
-        s = raw.strip()
-        if not s or s.startswith("#"):
+    seq_len = 0
+    saw_matching_uniprot = False
+
+    for row in reader:
+        if (row.get("uniprot") or "").strip() != expected_uniprot:
             continue
-        parts = s.split()
-        if len(parts) <= max(variant_idx, score_idx):
-            skipped_other += 1
-            continue
-        variant = parts[variant_idx]
+        saw_matching_uniprot = True
+        seq = (row.get("sequence") or "").strip()
+        if len(seq) > seq_len:
+            seq_len = len(seq)
+        variant = (row.get("variant") or "").strip()
         if variant == "WT":
             skipped_wt += 1
             continue
@@ -773,47 +735,41 @@ def _parse_prism_text(text: str, expected_uniprot: str) -> tuple[list[tuple], di
             skipped_wt += 1
             continue
         try:
-            score = float(parts[score_idx])
+            score = float(row.get("score_ml") or "")
         except ValueError:
             skipped_other += 1
             continue
         rows.append((expected_uniprot, "AF", pos, wt_aa, mut_aa, score))
 
-    seq_len = len(sequence)
+    if not saw_matching_uniprot:
+        return [], {
+            "status": "error",
+            "reason": f"no rows with uniprot=={expected_uniprot!r}",
+        }
+
     expected_n = max(1, 19 * max(seq_len - 1, 0))
     status = "ok"
     reason: str | None = None
     if not rows:
         status = "error"
-        reason = "data block parsed but produced zero rows"
-    elif seq_len > 0 and len(rows) < PRISM_VARIANT_OK_FRACTION * expected_n:
+        reason = "matched uniprot but produced zero valid variant rows"
+    elif seq_len > 0 and len(rows) < RASP_VARIANT_OK_FRACTION * expected_n:
         status = "ok_low"
         reason = (
-            f"parsed {len(rows)} variant rows; expected ≥ "
-            f"{int(PRISM_VARIANT_OK_FRACTION * expected_n)} for saturated scan "
+            f"parsed {len(rows)} variant rows; expected >= "
+            f"{int(RASP_VARIANT_OK_FRACTION * expected_n)} for saturated scan "
             f"on a {seq_len}-residue protein"
         )
-        logger.warning("PRISM low-yield for %s: %s", expected_uniprot, reason)
+        logger.warning("RaSP low-yield for %s: %s", expected_uniprot, reason)
 
     report = {
         "status": status,
         "n_rows": len(rows),
         "seq_len": seq_len,
-        "score_col": score_col,
+        "score_col": "score_ml",
         "skipped_wt": skipped_wt,
         "skipped_other": skipped_other,
     }
     if reason is not None:
         report["reason"] = reason
     return (rows if status != "error" else []), report
-
-
-def _strip_prism_comment(line: str) -> str:
-    """Strip the leading ``#`` (and optional single space) from a PRISM header line."""
-    s = line.lstrip()
-    if not s.startswith("#"):
-        return line
-    s = s[1:]
-    if s.startswith(" "):
-        s = s[1:]
-    return s
