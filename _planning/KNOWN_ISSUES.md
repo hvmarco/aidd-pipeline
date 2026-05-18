@@ -34,6 +34,49 @@ For step-16 stub fixtures this is acceptable -- methodology verification, not re
 
 ---
 
+### nb 99 `_run_target_moa` failure-path is architecturally shipped but never exercised on real data
+
+**Surfaced:** 2026-05-18, during step-17 closure run on Colab Pro+ A100.
+**Status:** Open. Step-18 follow-up.
+
+**Bug.** The graceful-failure path that spans `aidd.co_folding.predict_complex` (raises `BoltzPredictionError` with typed `error_class`), `aidd.mutation.render_moa_html` (`is_boltz_failed` branch → partial HTML with amber `.boltz-fail` banner + collapsible log-tail `<details>` block), and nb 99's `_run_target_moa` (per-(compound, variant) `try`/`except BoltzPredictionError` → priors-only HTML + summary-CSV `error` / `error_detail` columns) was shipped at commit `926368c` (Piece 4.5b of step 17). Architecturally complete and unit-verified at module-load level (`BoltzPredictionError.__mro__` check; builder regen at expected cell count). But every (compound, variant) pair in the A100 closure run on 2026-05-18 succeeded, so the failure-path code has never executed against a real Boltz failure end-to-end. The visual rendering — amber-banner partial HTML, log-tail truncation in `<details>`, summary-CSV row with populated `error` column + 300-char-clipped `error_detail` — is therefore unvalidated in a real browser / on a real CSV consumer.
+
+**Honest trade-off.** Code review confirms the failure-path logic is structurally correct, but "structurally correct" and "renders cleanly in a real browser" can diverge — HTML / CSS rendering bugs, character-escape edge cases in the log-tail (the boltz.log tail can contain `<`, `>`, `&`, raw newlines), and CSV-quoting issues when `error_detail` contains commas or quotes all surface only on first contact with real data. Until exercised, treat the failure-path as architecturally-shipped-but-unverified.
+
+**Strict-fix candidates for step 18.**
+
+- **(A) Force a synthetic Boltz failure for visual verification.** A small scratch script that calls `_run_target_moa` against a deliberately-too-large target on T4 (DPYD on T4 will OOM reliably per the 2026-05-18 closure-run-attempt that triggered this commit's `BoltzPredictionError` plumbing in the first place). Inspect the rendered HTML in a browser + the summary CSV in pandas. One Colab iteration cycle on T4 (cheap; T4 burn rate ≈ 1/3 of A100).
+- **(B) Wait for the natural first occurrence.** First time an operator runs nb 99 on a smaller GPU against a large target (T4 against DPYD or UGT1A1), the failure path fires. Operator pastes back the rendered HTML; verify or patch as needed. Free, but blocks first-occurrence diagnosis until someone hits it organically.
+
+**Fix scope.** Visual inspection of one real-data failure rendering; patch CSS / HTML-escape / CSV-escape if any rendering oddity surfaces. Likely no patches needed; the surface area is small.
+
+**Priority.** Background. Does not block step-17 closure; the architectural surface (try/except scope, `BoltzPredictionError` MRO, summary-CSV schema bump) is correct by construction.
+
+---
+
+### nb 99 per-(compound, variant) HTML reports inherit Boltz-2 cofactor asymmetry
+
+**Surfaced:** 2026-05-18, during step-17 nb 99 build (documented in nb 99 cell 27's Caveats markdown as a methods-paper-grade caveat; broken out here as an explicit known-issues entry).
+**Status:** Open. Step-18 follow-up if cofactor-dependent demos enter publication-grade interpretation.
+
+**Bug.** Boltz-2 co-folds **protein + ligand only** — cofactors are not part of the Boltz YAML schema. For cofactor-dependent demos (CYP2D6 with HEM iron; DPYD with FAD / NAD(P)+ / FMN / [4Fe-4S]; UGT1A1 with UDP-glucuronic acid in any future model), the **gnina-CNN lane** in nb 99's library mode sees the *holo*-with-cofactor receptor that `aidd.inputs.prep_receptor` produces (cofactors retained per the per-target `RECEPTOR_PREPS` preset), while the **Boltz-2 lane** sees the *apo* pocket. The two lanes therefore see different receptor states on cofactor-dependent targets.
+
+The per-(compound, variant) HTML reports rendered by `aidd.mutation.render_moa_html` inherit this asymmetry: the Boltz-2 affinity row shows the apo-pocket prediction; the gnina-CNN row (currently `None` in nb 99 MoA mode per the `_run_target_moa` helper; would be populated by a future per-compound gnina extension) would show the holo-with-cofactor prediction. The methods-paper caveat at nb 99 cell 27 quotes this directly: *"Agreement between the lanes is stronger evidence than either alone; divergence between the lanes specifically on cofactor-dependent targets warrants careful chemistry-side review (one lane is seeing an active-site environment the other is missing)."*
+
+**Honest trade-off.** The asymmetry is a methodological constraint of Boltz-2's input schema, **not a pipeline bug**. For non-cofactor targets (ERK2 ATP-binding-site kinases; KRAS small-GTPases without bound cofactors at the inhibitor site; NAT2 with the acetyl-CoA cofactor not required for substrate-binding-fit modelling) the asymmetry does not apply. For the cofactor-dependent demos in the headline set (CYP2D6, DPYD, UGT1A1), Boltz's affinity numbers are sub-optimally informed by the absence of the bound cofactor.
+
+**Strict-fix candidates for step 18.**
+
+- **(A) Wait for Boltz-2 to add cofactor schema support.** Upstream feature request; not in the project's control. Boltz-3 or a later release may close the gap.
+- **(B) Add a per-compound gnina lane to nb 99's MoA mode.** Per-(compound, variant) gnina docking gives the holo-with-cofactor affinity number explicitly; `render_moa_html` then renders both lanes side-by-side in the scores table (already supports `gnina_cnn_affinity` row; currently `None`); divergence between the lanes becomes the explicit read-out. ~80 lines added to `_run_target_moa` (single-compound `dock_library` invocation + parsed score extracted into the `scores.gnina_cnn_affinity` field of the record dict). The `posebusters_pass` row in the HTML scores table is similarly currently `None` and would be populated in the same step.
+- **(C) For high-divergence cofactor-dependent targets, run a covalent / MD validation outside the pipeline.** Out of scope for the in-silico screening pipeline; same scope-boundary as the catalysis-rate prediction caveat in nb 99's "What this notebook does NOT predict" block.
+
+**Fix scope.** (B) is the natural step-18 follow-up if cofactor-dependent demos enter publication-grade interpretation. The asymmetry is acceptable for the in-silico hypothesis-generation use case the pipeline is designed for (per `_planning/MECHANISM_OF_ACTION_SCOPE.md`'s "Honesty: what the pipeline does and does NOT predict" section).
+
+**Priority.** Background. Does not block step-17 closure; nb 99 cell 27 documents the asymmetry as a methods-paper caveat reviewers will see.
+
+---
+
 ## Closed
 
 ### Rescorer `rescorer_rf_proba` in `scored_poses.parquet` is data-leaked
