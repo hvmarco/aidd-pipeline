@@ -884,22 +884,39 @@ else:
         # ====================================================================
         # CELL 18 -- POSEBUSTERS QC
         # ====================================================================
-        code(title="Library: PoseBusters QC (mandatory gate before scoring)", source="""
+        code(title="Library: PoseBusters QC summary (read from scored_poses.parquet)", source="""
+# nb 03 (step 10) ran PoseBusters at docking time and merged the pass/fail
+# columns into scored_poses.parquet (no standalone posebusters.csv cached on
+# Drive). nb 99 is the production runner -- it trusts upstream QC and reads
+# the flags from the parquet rather than re-running PoseBusters. Re-running
+# is also a real cost trap: RDKit's ETKDG conformer generator hangs
+# unboundedly on a small fraction of compounds with pathological scaffolds
+# (epoxide-heavy polycyclic natural-products etc.), so a fresh run on a
+# multi-hundred-compound library can stall for hours on a single molecule.
 if RUN_MODE != "library":
     print("library mode skipped (RUN_MODE='moa')")
 else:
-    from aidd.docking import run_posebusters
-    target_root = _genotype_dir(TARGET["name"], None)
-    pb_path = target_root / "docking" / "labeled_subset" / "posebusters.csv"
-    if pb_path.exists():
-        pb_df = pd.read_csv(pb_path)
-        n_pass = int(pb_df["mol_pred_loaded"].sum()) if "mol_pred_loaded" in pb_df.columns else len(pb_df)
-        print(f"  cached: {pretty_path(pb_path, DATA_ROOT, REPO_ROOT)}")
-        print(f"  {len(pb_df)} poses checked; {n_pass} pass-rows on disk")
+    scored_for_qc = pd.read_parquet(target_root / "scoring" / "scored_poses.parquet")
+    pb_cols = [c for c in scored_for_qc.columns if c.startswith("pb_") or c.startswith("posebusters_")]
+    if not pb_cols:
+        print(f"  No PoseBusters columns found in scored_poses.parquet (looked for pb_* / posebusters_*).")
+        print(f"  Available columns: {list(scored_for_qc.columns)}")
+        print(f"  For a fresh non-ERK2 target, run nb 03 first -- it does docking + PoseBusters QC.")
     else:
-        pb_df = run_posebusters(POSES_SDF, receptor=WT_PDB)
-        pb_df.to_csv(pb_path, index=False)
-        print(f"  wrote {pretty_path(pb_path, DATA_ROOT, REPO_ROOT)} ({len(pb_df)} poses)")
+        # PoseBusters convention: 1 = pass, 0 = fail (per check).
+        per_check_pass_rate = scored_for_qc[pb_cols].mean().sort_values(ascending=False)
+        n_total = len(scored_for_qc)
+        all_pass_mask = scored_for_qc[pb_cols].all(axis=1)
+        n_all_pass = int(all_pass_mask.sum())
+        print(f"  PoseBusters columns in scored_poses.parquet: {len(pb_cols)} checks across {n_total} rows.")
+        print(f"  Rows passing all checks: {n_all_pass} / {n_total} ({100 * n_all_pass / n_total:.1f}%).")
+        print()
+        print(f"  Per-check pass rate (top 5):")
+        for check, rate in per_check_pass_rate.head(5).items():
+            print(f"    {check:<40s}  {rate:.3f}")
+        print(f"  Per-check pass rate (bottom 5):")
+        for check, rate in per_check_pass_rate.tail(5).items():
+            print(f"    {check:<40s}  {rate:.3f}")
 """),
 
         # ====================================================================
