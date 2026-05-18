@@ -141,7 +141,7 @@ RASP_AF_PRISM_URL = (
 )
 RASP_AF_DATA_VERSION = "alphafold_UP000005640_9606_HUMAN_v2_prism_dir"
 # Bumped after each successful demo-set cache rebuild on a fresh host.
-RASP_LAST_VERIFIED: str | None = None
+RASP_LAST_VERIFIED: str | None = "2026-05-18"
 
 
 # ---------------------------------------------------------------------------
