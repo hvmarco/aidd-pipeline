@@ -116,7 +116,7 @@ if IS_COLAB:
     # pdbfixer / posebusters are not. gnina + boltz are installed in the
     # respective stage cells (gnina is a Linux binary, boltz is a heavy pip
     # install with CUDA; both are GPU-cell territory).
-    !pip install -q rdkit py3Dmol prolif biopython pdbfixer posebusters
+    !pip install -q rdkit py3Dmol prolif biopython pdbfixer posebusters datamol meeko gemmi
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
         !git clone https://github.com/hvmarco/aidd-pipeline.git {REPO_ROOT}
@@ -765,8 +765,9 @@ if RUN_MODE != "library":
     print("library mode skipped (RUN_MODE='moa')")
 else:
     target_root = _genotype_dir(TARGET["name"], None)
-    ligands_dir = target_root / "ligands"
-    LIGANDS_SDF = ligands_dir / "ligands_prepared.sdf"
+    # Matches the nb 02 convention (data/derived/<target>/ligands_prepared.sdf)
+    # so the existing ERK2 cache from step 8 is found on first lookup.
+    LIGANDS_SDF = target_root / "ligands_prepared.sdf"
 
     if LIGANDS_SDF.exists():
         print(f"  cached: {pretty_path(LIGANDS_SDF, DATA_ROOT, REPO_ROOT)}")
@@ -783,7 +784,7 @@ else:
         df_smi = read_smiles(LIBRARY_SMILES_PATH)
         print(f"  {len(df_smi)} SMILES read; running ADMET + 3D embed ...")
         df_prepped = prepare_library(df_smi, n_workers=1, progress=True)
-        ligands_dir.mkdir(parents=True, exist_ok=True)
+        target_root.mkdir(parents=True, exist_ok=True)
         write_sdf(
             df_prepped[df_prepped["ok"]],
             LIGANDS_SDF,
@@ -856,7 +857,12 @@ if RUN_MODE != "library":
 else:
     from aidd.docking import dock_library, require_gnina
     target_root = _genotype_dir(TARGET["name"], None)
-    docking_dir = target_root / "docking"
+    # Matches the nb 03 / 04 / 06 convention: docking outputs live under
+    # docking/labeled_subset/ so the existing ERK2 cache from step 10 is
+    # found on first lookup. The "labeled_subset" subdir name is historical
+    # (from the original step-10 ERK2 labeled-subset training run); kept
+    # for consistency with upstream notebooks even for non-ERK2 fresh runs.
+    docking_dir = target_root / "docking" / "labeled_subset"
     POSES_SDF   = docking_dir / "poses.sdf"
 
     if POSES_SDF.exists() and (docking_dir / "gnina_scores.csv").exists():
@@ -884,7 +890,7 @@ if RUN_MODE != "library":
 else:
     from aidd.docking import run_posebusters
     target_root = _genotype_dir(TARGET["name"], None)
-    pb_path = target_root / "docking" / "posebusters.csv"
+    pb_path = target_root / "docking" / "labeled_subset" / "posebusters.csv"
     if pb_path.exists():
         pb_df = pd.read_csv(pb_path)
         n_pass = int(pb_df["mol_pred_loaded"].sum()) if "mol_pred_loaded" in pb_df.columns else len(pb_df)
@@ -921,7 +927,7 @@ else:
         ifp_df = compute_ifp(WT_PDB, POSES_SDF, progress=True)
         # Materialise as a flat per-pose DataFrame joined to the gnina scores.
         from aidd.docking import parse_poses_sdf
-        gnina_scores = pd.read_csv(target_root / "docking" / "gnina_scores.csv")
+        gnina_scores = pd.read_csv(target_root / "docking" / "labeled_subset" / "gnina_scores.csv")
         # Note: full IFP-rescorer training is in notebook 04; here we ship the
         # minimal columns the consensus needs.
         scoring_dir.mkdir(parents=True, exist_ok=True)
