@@ -1274,6 +1274,12 @@ This notebook is the audit-shape production runner; the teaching notebooks 00-09
 - **Consensus rank product in virtual screening.** Houston, D.R. & Walkinshaw, M.D. "Consensus docking: improving the reliability of docking in a virtual screening context." *J. Chem. Inf. Model.* **53**, 384 (2013). [doi:10.1021/ci300399w](https://doi.org/10.1021/ci300399w) -- justifies the geometric-mean rank-product used in the consensus cell.
 - **Catalysis prediction (out of scope here, for context).** Yan, B. *et al.* "EnzyHTP: Bridging molecular dynamics and quantum mechanics for enzyme engineering." *J. Chem. Theory Comput.* (2022) -- for readers who want to know what the right tool looks like for the catalytic-rate prediction this notebook explicitly does not attempt.
 """),
+        # GPU/T4 by default so Colab pre-selects the runtime when this notebook
+        # opens (mirrors nb 01 / 03 / 04 / 05). Library + MoA modes both need
+        # GPU for gnina docking + Boltz-2 co-folding. Stage 0 cache build and
+        # CPU-only stages (priors lookup, consensus rank) run fine on T4 too.
+        accelerator="GPU",
+        gpu_type="T4",
     )
     save(nb, NOTEBOOK_PATH)
 
