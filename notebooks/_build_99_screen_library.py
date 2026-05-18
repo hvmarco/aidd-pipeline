@@ -113,9 +113,9 @@ IS_COLAB = "google.colab" in sys.modules
 if IS_COLAB:
     # CPU-only deps. pandas / numpy / matplotlib / pyarrow / requests / pyyaml
     # are in Colab's default image; rdkit / py3Dmol / prolif / biopython /
-    # pdbfixer / posebusters are not. gnina + boltz are installed in the
-    # respective stage cells (gnina is a Linux binary, boltz is a heavy pip
-    # install with CUDA; both are GPU-cell territory).
+    # pdbfixer / posebusters are not. gnina + boltz are installed in their
+    # own dedicated cells below (separate from this CPU-deps cell because
+    # both require a GPU runtime and boltz triggers a kernel restart).
     !pip install -q rdkit py3Dmol prolif biopython pdbfixer posebusters datamol meeko gemmi
     REPO_ROOT = Path("/content/aidd-pipeline")
     if not REPO_ROOT.exists():
@@ -136,6 +136,124 @@ else:
 
 print(f"Repo root: {REPO_ROOT}")
 print(f"Running on: {'Colab' if IS_COLAB else 'local'}")
+"""),
+
+        # ====================================================================
+        # NEW: HEAVY-BINARY INSTALL MARKDOWN -- explain the kernel restart
+        # ====================================================================
+        markdown("""
+### Heavy-binary installs — gnina + Boltz-2 (Colab only)
+
+The next two cells install **gnina** (Linux GPU binary; ~30 s) and **Boltz-2** (pip install with CUDA dependencies; ~3-5 min). Both are Colab-only — a local env gets them via `environment.yml`; on Colab the runtime is ephemeral, so each fresh session re-installs.
+
+**The Boltz install requires a kernel restart.** Boltz pins specific `numpy` / `scipy` / `scikit-learn` versions that conflict with Colab's defaults; after the pip install completes, the cell calls `os.kill(os.getpid(), 9)` to hard-restart the Python kernel so the new versions take effect. **On first run, the kernel dies inside the Boltz install cell — Colab auto-restarts it; then click `Run All` (or `Runtime → Run after`) to continue.** A sentinel file at `/content/_aidd_boltz_setup_done` makes the second run skip the install and just probe that the CLI is on PATH.
+
+On a non-Colab env both cells are no-ops.
+"""),
+
+        # ====================================================================
+        # NEW CELL -- gnina install (mirrors nb 03's pattern; no kernel restart)
+        # ====================================================================
+        code(title="Setup: gnina install + GPU probe (Colab only)", source="""
+import shutil
+import subprocess
+
+# gnina pin -- mirror nb 03; update via the same procedure (bump GNINA_VERSION /
+# GNINA_ASSET, re-run on a fresh runtime, commit on success).
+GNINA_VERSION = "v1.3.2"
+GNINA_ASSET   = "gnina.1.3.2"   # "older-CUDA, more compatible" binary; .cuda12.8 is for newer cards
+
+
+def _gnina_works() -> bool:
+    if not shutil.which("gnina"):
+        return False
+    try:
+        r = subprocess.run(["gnina", "--version"], capture_output=True, timeout=15)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+if IS_COLAB:
+    # Fail loudly if no GPU -- gnina v1.3+ is CUDA-linked.
+    gpu_ok = subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0
+    if not gpu_ok:
+        raise RuntimeError(
+            "No GPU detected. gnina v1.3+ links against CUDA and will not load "
+            "on CPU runtimes. Switch to a GPU: Runtime -> Change runtime type -> "
+            "T4 GPU, then re-run this cell."
+        )
+
+    if not _gnina_works():
+        print(f"Downloading gnina {GNINA_VERSION} ({GNINA_ASSET})...")
+        url = f"https://github.com/gnina/gnina/releases/download/{GNINA_VERSION}/{GNINA_ASSET}"
+        !wget -q -O /usr/local/bin/gnina {url}
+        !chmod +x /usr/local/bin/gnina
+
+        # Probe -- fail loudly if the binary cannot load (missing CUDA libs etc.)
+        probe = subprocess.run(["gnina", "--version"], capture_output=True, text=True)
+        if probe.returncode != 0:
+            raise RuntimeError(
+                f"gnina installed but `gnina --version` exited {probe.returncode}. "
+                f"stderr:\\n{probe.stderr}\\n\\nMost common cause: a missing CUDA "
+                "library -- check `!ldd /usr/local/bin/gnina | grep 'not found'` "
+                "and confirm the runtime is GPU-backed."
+            )
+    !gnina --version | head -1
+else:
+    print("Local env: gnina from environment.yml (or local install); no Colab install needed.")
+"""),
+
+        # ====================================================================
+        # NEW CELL -- Boltz-2 install + kernel restart (mirrors nb 05's pattern)
+        # ====================================================================
+        code(title="Setup: Boltz-2 install + kernel restart (Colab only)", source="""
+import os
+
+# Must match BOLTZ2_VERSION in src/aidd/co_folding.py. Hardcoded here so the
+# install can happen before we import the module (chicken-and-egg). Keep in sync.
+BOLTZ_VERSION_PIN = "2.2.1"
+
+# Sentinel file on /content. Persists for the lifetime of the runtime but
+# does not survive a hard-disconnect; that is the right scope -- the install
+# IS valid for the lifetime of the runtime.
+SETUP_SENTINEL = Path("/content/_aidd_boltz_setup_done")
+
+if IS_COLAB:
+    if not SETUP_SENTINEL.exists():
+        # Mirror nb 05's install line verbatim (sokrypton's Boltz Colab
+        # pattern: no [cuda] extra; --no-warn-conflicts; cuequivariance-*
+        # for the Ampere+ kernel path). Boltz brings numpy/scipy/sklearn/
+        # rdkit/pandas at exact pins; DO NOT add them to this install line.
+        print(f"Installing boltz=={BOLTZ_VERSION_PIN} + cuequivariance + py3Dmol + matplotlib + seaborn... (~3-5 min)")
+        !pip install -q --no-warn-conflicts "boltz=={BOLTZ_VERSION_PIN}" cuequivariance-torch cuequivariance-ops-torch-cu12 py3Dmol matplotlib seaborn
+        SETUP_SENTINEL.touch()
+        print()
+        print("Install complete. Restarting the Python kernel so the newly")
+        print("installed numpy / scipy / scikit-learn versions take effect.")
+        print()
+        print("->  Once the kernel comes back up, RE-RUN this cell (or `Run All`)")
+        print("    to finish setup. Subsequent runs are fast: the sentinel file")
+        print("    at /content/_aidd_boltz_setup_done skips the install.")
+        os.kill(os.getpid(), 9)
+
+    # Post-install path: install has happened, kernel restarted, second
+    # execution of this cell. Probe the CLI is on PATH and live.
+    from aidd.co_folding import BOLTZ2_VERSION  # noqa: E402
+    if BOLTZ2_VERSION != BOLTZ_VERSION_PIN:
+        print(f"Warning: BOLTZ2_VERSION in aidd.co_folding is {BOLTZ2_VERSION!r}, "
+              f"but the install above pinned {BOLTZ_VERSION_PIN!r}. Bump one to match.")
+    probe = subprocess.run(["boltz", "--help"], capture_output=True, text=True, timeout=60)
+    if probe.returncode != 0:
+        raise RuntimeError(
+            f"boltz CLI installed but `boltz --help` exited {probe.returncode}.\\n"
+            f"stderr:\\n{probe.stderr}\\n"
+            "Most common cause: a missing CUDA library at import time. "
+            "Confirm the runtime is GPU-backed and re-run."
+        )
+    print(f"Boltz-2 ready: {BOLTZ2_VERSION}")
+else:
+    print("Local env: Boltz-2 from environment.yml; no Colab install needed.")
 """),
 
         # ====================================================================
@@ -1156,7 +1274,11 @@ def _run_target_moa(target_config, compounds):
     \"\"\"
     from aidd.co_folding import predict_complex, require_boltz
     from Bio.SeqUtils import seq1
-    require_boltz()
+    # NOTE: require_boltz() moved out of the helper top -- it is now called
+    # just before the first predict_complex invocation in the in-scope loop
+    # below. Demos where no in-scope genotype actually needs Boltz (e.g. a
+    # future call with empty compounds or no resolvable SMILES) will
+    # degrade gracefully without tripping the CLI-not-found check.
 
     target_name = target_config["name"]
     uniprot     = target_config["uniprot"]
@@ -1231,6 +1353,7 @@ def _run_target_moa(target_config, compounds):
     ]
 
     parser2 = PDBParser(QUIET=True)
+    boltz_checked = False  # one-shot guard so require_boltz fires once before the first predict_complex
 
     for compound_name, smiles_in in compounds:
         smiles = smiles_in or name_to_smiles(compound_name)
@@ -1239,6 +1362,9 @@ def _run_target_moa(target_config, compounds):
             continue
 
         for genotype_label, genotype_pdb, variant in genotypes:
+            if not boltz_checked:
+                require_boltz()
+                boltz_checked = True
             print(f"\\n=== {compound_name} on {target_name} {genotype_label} ===")
             s = parser2.get_structure("x", str(genotype_pdb))
             geno_seq = "".join(seq1(r.get_resname()) for r in s[0]["A"] if r.id[0] == " ")
