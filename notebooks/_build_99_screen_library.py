@@ -1130,58 +1130,129 @@ The cell below auto-skips when `RUN_MODE = "library"`.
 """),
 
         # ====================================================================
-        # CELL 24 -- MoA PER-COMPOUND x PER-VARIANT LOOP
+        # NEW HELPER CELL -- _run_target_moa orchestration (permanent)
         # ====================================================================
-        code(title="MoA: per-compound x per-variant report loop", source="""
-if RUN_MODE != "moa":
-    print("MoA mode skipped (RUN_MODE='library')")
-elif not MOA_COMPOUNDS:
-    print("MoA mode but MOA_COMPOUNDS is empty -- nothing to do")
-else:
-    from aidd.docking import dock_library
+        code(title="Pipeline helper: _run_target_moa(target_config, compounds)", source="""
+def _run_target_moa(target_config, compounds):
+    \"\"\"End-to-end MoA pipeline for one target: receptor + priors + per-(compound, variant) reports.
+
+    Used by both the production MoA cell below (which calls it with the
+    notebook-level TARGET + MOA_COMPOUNDS) and the closure-demo cells at the
+    bottom of the notebook (one call per headline-demo target). Centralising
+    the orchestration here means closure demos and production MoA mode
+    exercise the *same* codepath; a bug fix here lands in both.
+
+    For each (compound, variant) pair:
+    - In-scope variants (handling='mutate_in_place' or WT): Boltz-2 single-
+      compound co-fold + render_moa_html with the full pose + priors record.
+    - Out-of-scope variants (handling='out_of_scope_splice' or
+      'out_of_scope_promoter'): priors-only HTML report; no Boltz-2 call
+      (variants without protein-structural consequence -- splice / promoter --
+      still get a priors-only HTML at the (compound, variant) cell of the
+      summary grid, mirroring nb 09's coverage).
+
+    Returns the summary DataFrame (also printed inline) or None when no
+    compounds resolved.
+    \"\"\"
     from aidd.co_folding import predict_complex, require_boltz
+    from Bio.SeqUtils import seq1
     require_boltz()
 
-    moa_root = _genotype_dir(TARGET["name"], None) / "moa_reports"
+    target_name = target_config["name"]
+    uniprot     = target_config["uniprot"]
+    pdb_id      = target_config["pdb_id"]
+
+    # --- Receptor resolution (WT + per-variant) -----------------------------
+    wt_dir = _genotype_dir(target_name, None)
+    wt_fold = wt_dir / "fold"
+    wt_fold.mkdir(parents=True, exist_ok=True)
+    wt_pdb = wt_fold / f"{target_name}_best.pdb"
+    if not wt_pdb.exists():
+        if pdb_id is not None:
+            raw = fetch_pdb(pdb_id, cache_dir=RCSB_CACHE)
+            prep_receptor(
+                raw,
+                target_name=target_name.upper() if target_name.upper() in RECEPTOR_PREPS else None,
+                out_path=wt_pdb,
+            )
+        else:
+            _fetch_alphafold_pdb(uniprot, wt_pdb)
+
+    variant_pdbs = {}
+    for variant in target_config["variants"]:
+        var_label = variant["label"]
+        handling  = variant.get("handling", "mutate_in_place")
+        var_fold  = _genotype_dir(target_name, var_label) / "fold"
+        var_fold.mkdir(parents=True, exist_ok=True)
+        var_pdb   = var_fold / f"{target_name}_{_genotype_slug(var_label)}_best.pdb"
+        if handling == "mutate_in_place":
+            if not var_pdb.exists():
+                assert_wt_residue(wt_pdb, "A", variant["position"], variant["wt_aa"])
+                _apply_mutation_pdbfixer(
+                    wt_pdb,
+                    position=variant["position"],
+                    wt_aa=variant["wt_aa"],
+                    mut_aa=variant["mut_aa"],
+                    out_pdb=var_pdb,
+                )
+            variant_pdbs[var_label] = var_pdb
+
+    # --- Priors resolution (per variant) ------------------------------------
+    variant_priors = {}
+    for variant in target_config["variants"]:
+        var_label = variant["label"]
+        if variant.get("handling") in ("out_of_scope_splice", "out_of_scope_promoter"):
+            variant_priors[var_label] = {
+                "am_score": None, "am_class": None,
+                "gnomad_af": None, "gnomad_found": None, "gnomad_flipped": None,
+                "rasp_ddg": None,
+            }
+        else:
+            variant_priors[var_label] = _resolve_priors(
+                uniprot, variant["position"], variant["wt_aa"], variant["mut_aa"],
+            )
+
+    # --- MoA loop -----------------------------------------------------------
+    moa_root = _genotype_dir(target_name, None) / "moa_reports"
     moa_root.mkdir(parents=True, exist_ok=True)
     summary_rows = []
 
-    # Genotypes to iterate: WT first, then any in-scope variants
-    genotypes = [("WT", WT_PDB, None)]
-    for variant in TARGET["variants"]:
+    # In-scope genotypes (WT + missense variants for Boltz-2 co-folding)
+    genotypes = [("WT", wt_pdb, None)]
+    for variant in target_config["variants"]:
         if variant.get("handling") in ("out_of_scope_splice", "out_of_scope_promoter"):
             continue
-        if variant["label"] in VARIANT_PDBS:
-            genotypes.append((variant["label"], VARIANT_PDBS[variant["label"]], variant))
+        if variant["label"] in variant_pdbs:
+            genotypes.append((variant["label"], variant_pdbs[variant["label"]], variant))
 
-    target_sequence = None  # cache the parsed sequence per genotype below
+    out_of_scope_variants = [
+        v for v in target_config["variants"]
+        if v.get("handling") in ("out_of_scope_splice", "out_of_scope_promoter")
+    ]
 
-    for compound_name, smiles_in in MOA_COMPOUNDS:
+    parser2 = PDBParser(QUIET=True)
+
+    for compound_name, smiles_in in compounds:
         smiles = smiles_in or name_to_smiles(compound_name)
         if smiles is None:
             print(f"  SKIP {compound_name}: no SMILES from PubChem and no fallback given")
             continue
+
         for genotype_label, genotype_pdb, variant in genotypes:
-            print(f"\\n=== {compound_name} on {TARGET['name']} {genotype_label} ===")
-            # Boltz-2 single-compound co-fold for this (compound, genotype) pair
-            parser2 = PDBParser(QUIET=True)
+            print(f"\\n=== {compound_name} on {target_name} {genotype_label} ===")
             s = parser2.get_structure("x", str(genotype_pdb))
-            from Bio.SeqUtils import seq1
             geno_seq = "".join(seq1(r.get_resname()) for r in s[0]["A"] if r.id[0] == " ")
-            cdir = _genotype_dir(TARGET["name"], genotype_label if genotype_label != "WT" else None) / "boltz" / "per_compound" / compound_name.replace(" ", "_")
+            cdir = _genotype_dir(target_name, genotype_label if genotype_label != "WT" else None) / "boltz" / "per_compound" / compound_name.replace(" ", "_")
             cdir.mkdir(parents=True, exist_ok=True)
             boltz_result = predict_complex(geno_seq, smiles, cdir, compound_id=compound_name.replace(" ", "_"))
-            # Priors for this genotype (None for WT)
-            if variant is not None and variant.get("position") is not None:
-                priors = _resolve_priors(TARGET["uniprot"], variant["position"],
-                                          variant["wt_aa"], variant["mut_aa"])
-            else:
-                priors = {"am_score": None, "am_class": None,
-                          "gnomad_af": None, "gnomad_found": None, "gnomad_flipped": None,
-                          "rasp_ddg": None}
-            # Build the MoA record dict (matches render_moa_html's contract)
+
+            priors = variant_priors.get(variant["label"]) if variant else {
+                "am_score": None, "am_class": None,
+                "gnomad_af": None, "gnomad_found": None, "gnomad_flipped": None,
+                "rasp_ddg": None,
+            }
             record = {
-                "target_name": TARGET["name"], "uniprot": TARGET["uniprot"],
+                "target_name": target_name, "uniprot": uniprot,
                 "variant_label": genotype_label,
                 "variant_handling": variant["handling"] if variant else "wt",
                 "compound_name": compound_name, "smiles": smiles,
@@ -1195,7 +1266,7 @@ else:
                 "scores": {
                     "boltz_affinity":              boltz_result.affinity,
                     "boltz_affinity_probability":  boltz_result.affinity_probability,
-                    "gnina_cnn_affinity":          None,   # filled in by per-compound gnina if you add it
+                    "gnina_cnn_affinity":          None,
                     "posebusters_pass":            None,
                 },
             }
@@ -1204,6 +1275,7 @@ else:
             print(f"  HTML: {pretty_path(html_path, DATA_ROOT, REPO_ROOT)}")
             summary_rows.append({
                 "compound": compound_name, "variant": genotype_label,
+                "handling": variant["handling"] if variant else "wt",
                 "boltz_affinity": boltz_result.affinity,
                 "boltz_affinity_probability": boltz_result.affinity_probability,
                 "am_score": priors["am_score"], "am_class": priors["am_class"],
@@ -1211,11 +1283,62 @@ else:
                 "html_report": str(html_path.relative_to(moa_root)),
             })
 
-    if summary_rows:
-        SUMMARY_CSV = moa_root / "summary.csv"
-        pd.DataFrame(summary_rows).to_csv(SUMMARY_CSV, index=False)
-        print(f"\\nMoA summary: {len(summary_rows)} reports")
-        print(f"  -> {pretty_path(SUMMARY_CSV, DATA_ROOT, REPO_ROOT)}")
+        # Out-of-scope variants: priors-only HTML reports (no Boltz-2 call).
+        for variant in out_of_scope_variants:
+            var_label = variant["label"]
+            print(f"\\n=== {compound_name} on {target_name} {var_label} (priors-only; {variant['handling']}) ===")
+            priors = variant_priors.get(var_label, {})
+            record = {
+                "target_name": target_name, "uniprot": uniprot,
+                "variant_label": var_label,
+                "variant_handling": variant["handling"],
+                "compound_name": compound_name, "smiles": smiles,
+                "priors": {
+                    "alphamissense": {"score": priors.get("am_score"), "class": priors.get("am_class")},
+                    "gnomad":        {"allele_freq_overall": priors.get("gnomad_af"),
+                                       "found": priors.get("gnomad_found"),
+                                       "reference_flipped": priors.get("gnomad_flipped")},
+                    "rasp":          {"ddg": priors.get("rasp_ddg")},
+                },
+                "out_of_scope_reason": variant.get("out_of_scope_reason", ""),
+            }
+            html_path = moa_root / f"{compound_name.replace(' ', '_')}_{_genotype_slug(var_label)}_priors_only.html"
+            render_moa_html(record, html_path)
+            print(f"  HTML (priors-only): {pretty_path(html_path, DATA_ROOT, REPO_ROOT)}")
+            summary_rows.append({
+                "compound": compound_name, "variant": var_label,
+                "handling": variant["handling"],
+                "boltz_affinity": None, "boltz_affinity_probability": None,
+                "am_score": None, "am_class": None, "gnomad_af": None, "rasp_ddg": None,
+                "html_report": str(html_path.relative_to(moa_root)),
+            })
+
+    if not summary_rows:
+        print("\\nNo (compound, variant) pairs resolved -- nothing to summarise.")
+        return None
+
+    summary_csv = moa_root / "summary.csv"
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df.to_csv(summary_csv, index=False)
+    print(f"\\nMoA summary: {len(summary_rows)} reports")
+    print(f"  -> {pretty_path(summary_csv, DATA_ROOT, REPO_ROOT)}")
+    print()
+    print(summary_df.to_string(index=False))
+    return summary_df
+
+print("_run_target_moa defined")
+"""),
+
+        # ====================================================================
+        # CELL 24 -- MoA PER-COMPOUND x PER-VARIANT LOOP (thin wrapper)
+        # ====================================================================
+        code(title="MoA: per-compound x per-variant report loop", source="""
+if RUN_MODE != "moa":
+    print("MoA mode skipped (RUN_MODE='library')")
+elif not MOA_COMPOUNDS:
+    print("MoA mode but MOA_COMPOUNDS is empty -- nothing to do")
+else:
+    _run_target_moa(TARGET, MOA_COMPOUNDS)
 """),
 
         # ====================================================================
@@ -1297,6 +1420,149 @@ This notebook is the audit-shape production runner; the teaching notebooks 00-09
 - **Consensus rank product in virtual screening.** Houston, D.R. & Walkinshaw, M.D. "Consensus docking: improving the reliability of docking in a virtual screening context." *J. Chem. Inf. Model.* **53**, 384 (2013). [doi:10.1021/ci300399w](https://doi.org/10.1021/ci300399w) -- justifies the geometric-mean rank-product used in the consensus cell.
 - **Catalysis prediction (out of scope here, for context).** Yan, B. *et al.* "EnzyHTP: Bridging molecular dynamics and quantum mechanics for enzyme engineering." *J. Chem. Theory Comput.* (2022) -- for readers who want to know what the right tool looks like for the catalytic-rate prediction this notebook explicitly does not attempt.
 """),
+
+        # ====================================================================
+        # ============ STEP-17 CLOSURE SECTION -- DELETE WHEN PASS ===========
+        # All cells below this banner are step-17 closure smoke-tests that
+        # exercise the production runner against the full headline-demo set
+        # in a single Run All. The _run_target_moa helper above is the same
+        # codepath the production MoA cell uses, so a green run here implies
+        # the production runner works for each demo's TARGET / MOA_COMPOUNDS.
+        #
+        # Piece 5 (step-closing commit) deletes this whole section so the
+        # canonical nb 99 returns to its 32+1-cell production shape.
+        # ====================================================================
+        markdown("""
+---
+
+## Step-17 closure smoke-test — DELETE WHEN PASS
+
+The cells below are step-17 closure smoke-tests, **not** part of the production pipeline. They exercise `_run_target_moa()` against each of the five headline-demo MoA targets in one Run All so a reviewer can confirm every demo lands cleanly before the step-closing commit. The helper they call is the same one the production "MoA: per-compound x per-variant report loop" cell uses, so any failure here would also affect production MoA mode on the same target.
+
+Order of demos is cheapest-first so a failure surfaces with the smallest sunk compute:
+
+1. **DPYD + 5-FU** — \\*2A only (out_of_scope_splice); WT-only Boltz-2 + priors-only HTML for \\*2A.
+2. **UGT1A1 + irinotecan** — no human crystal (AlphaFold-DB fetch path) + \\*28 (out_of_scope_promoter); WT-only Boltz-2 + priors-only HTML for \\*28.
+3. **CYP2D6 + tamoxifen** — \\*4 (out_of_scope_splice) + \\*10 (missense); 2 Boltz-2 calls (WT + \\*10) + priors-only HTML for \\*4.
+4. **KRAS + sotorasib** — G12C (missense, covalent target); 2 Boltz-2 calls (WT + G12C).
+5. **NAT2 + isoniazid** *(deep walkthrough)* — \\*5 + \\*6 + \\*7 (all missense); 4 Boltz-2 calls (WT + \\*5 + \\*6 + \\*7).
+
+Total expected Colab time on T4: ~30-60 min for all five demos. Once the closing commit lands, this whole section is deleted; nb 99 returns to its 32+1-cell production shape.
+"""),
+
+        markdown("""
+### Demo 1 — DPYD \\*2A + 5-FU (out_of_scope_splice; priors-only)
+"""),
+        code(title="Closure demo 1 - DPYD *2A + 5-FU (DELETE WHEN PASS)", source="""
+_run_target_moa(
+    target_config={
+        "name":     "dpyd",
+        "uniprot":  "Q12882",
+        "pdb_id":   "1H7W",
+        "variants": [
+            {"label": "*2A", "handling": "out_of_scope_splice",
+             "position": None, "wt_aa": None, "mut_aa": None, "rsid": "rs3918290",
+             "out_of_scope_reason":
+                 "DPYD*2A is a splice-donor variant (IVS14+1G>A) producing a "
+                 "truncated protein with the catalytic domain missing. "
+                 "AlphaMissense and RaSP are missense-only and cannot score it."},
+        ],
+    },
+    compounds=[("5-fluorouracil", "C1=C(C(=O)NC(=O)N1)F")],
+)
+"""),
+
+        markdown("""
+### Demo 2 — UGT1A1 \\*28 + irinotecan (no human crystal; out_of_scope_promoter)
+"""),
+        code(title="Closure demo 2 - UGT1A1 *28 + irinotecan (DELETE WHEN PASS)", source="""
+_run_target_moa(
+    target_config={
+        "name":     "ugt1a1",
+        "uniprot":  "P22309",
+        "pdb_id":   None,   # no human crystal; AlphaFold-DB fetch path
+        "variants": [
+            {"label": "*28", "handling": "out_of_scope_promoter",
+             "position": None, "wt_aa": None, "mut_aa": None, "rsid": "rs8175347",
+             "out_of_scope_reason":
+                 "UGT1A1*28 is a TATA-box promoter variant ((TA)7TAA vs (TA)6TAA). "
+                 "It does NOT change the protein sequence -- reduced enzyme activity "
+                 "is driven by reduced transcription. AlphaMissense + RaSP are not "
+                 "relevant; gnomAD lists it by chromosomal position."},
+        ],
+    },
+    compounds=[("irinotecan",
+                "CCC1=C2CN3C(=CC4=C(C3=O)COC(=O)C4(CC)O)C2=NC5=C1C=C(C=C5)"
+                "OC(=O)N6CCC(CC6)N7CCCCC7")],
+)
+"""),
+
+        markdown("""
+### Demo 3 — CYP2D6 \\*4 (splice) + \\*10 (missense) + tamoxifen
+"""),
+        code(title="Closure demo 3 - CYP2D6 *4 + *10 + tamoxifen (DELETE WHEN PASS)", source="""
+_run_target_moa(
+    target_config={
+        "name":     "cyp2d6",
+        "uniprot":  "P10635",
+        "pdb_id":   "3QM4",
+        "variants": [
+            {"label": "*4", "handling": "out_of_scope_splice",
+             "position": None, "wt_aa": None, "mut_aa": None, "rsid": "rs3892097",
+             "out_of_scope_reason":
+                 "CYP2D6*4 is a splice-acceptor variant (1846G>A) producing a "
+                 "non-functional protein via aberrant splicing. AlphaMissense and "
+                 "RaSP are missense-only protein-level tools and cannot score it."},
+            {"label": "*10", "handling": "mutate_in_place",
+             "position": 34, "wt_aa": "P", "mut_aa": "S", "rsid": "rs1065852"},
+        ],
+    },
+    compounds=[("tamoxifen",
+                "CC/C(=C(\\\\C1=CC=CC=C1)/C2=CC=C(C=C2)OCCN(C)C)/C3=CC=CC=C3")],
+)
+"""),
+
+        markdown("""
+### Demo 4 — KRAS G12C + sotorasib
+"""),
+        code(title="Closure demo 4 - KRAS G12C + sotorasib (DELETE WHEN PASS)", source="""
+_run_target_moa(
+    target_config={
+        "name":     "kras",
+        "uniprot":  "P01116",
+        "pdb_id":   "4OBE",   # WT KRAS reference (NOT 6OIM = variant co-crystal)
+        "variants": [
+            {"label": "G12C", "handling": "mutate_in_place",
+             "position": 12, "wt_aa": "G", "mut_aa": "C", "rsid": "rs121913530"},
+        ],
+    },
+    compounds=[("sotorasib", None)],   # PubChem lookup
+)
+"""),
+
+        markdown("""
+### Demo 5 — NAT2 \\*5 + \\*6 + \\*7 + isoniazid (deep walkthrough)
+"""),
+        code(title="Closure demo 5 - NAT2 *5/*6/*7 + isoniazid (DELETE WHEN PASS)", source="""
+_run_target_moa(
+    target_config={
+        "name":     "nat2",
+        "uniprot":  "P11245",
+        "pdb_id":   "2PFR",
+        "variants": [
+            {"label": "*5", "handling": "mutate_in_place",
+             "position": 114, "wt_aa": "I", "mut_aa": "T", "rsid": "rs1801280"},
+            {"label": "*6", "handling": "mutate_in_place",
+             "position": 197, "wt_aa": "R", "mut_aa": "Q", "rsid": "rs1799930"},
+            {"label": "*7", "handling": "mutate_in_place",
+             "position": 286, "wt_aa": "G", "mut_aa": "E", "rsid": "rs1799931"},
+        ],
+    },
+    compounds=[("isoniazid", "C1=CN=CC=C1C(=O)NN")],
+)
+"""),
+        # ============== END STEP-17 CLOSURE SECTION ==========================
+
         # GPU/T4 by default so Colab pre-selects the runtime when this notebook
         # opens (mirrors nb 01 / 03 / 04 / 05). Library + MoA modes both need
         # GPU for gnina docking + Boltz-2 co-folding. Stage 0 cache build and
